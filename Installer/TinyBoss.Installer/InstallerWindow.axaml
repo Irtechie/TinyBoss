@@ -65,6 +65,27 @@
                    HorizontalAlignment="Center"
                    TextAlignment="Center"
                    Text="TinyBoss is a tray app that provides window tiling (Ctrl+Shift+G) and push-to-talk voice commands (Ctrl+Shift+V)." />
+
+        <!-- Optional CLI tools -->
+        <Border Background="#181825"
+                CornerRadius="8"
+                Padding="16,12"
+                Margin="0,4,0,0">
+          <StackPanel Spacing="6">
+            <CheckBox IsChecked="{Binding InstallClis}"
+                      Foreground="#cdd6f4"
+                      FontSize="14">
+              <TextBlock Text="Install CLI tools (Claude, Codex, + more)"
+                         Foreground="#cdd6f4" />
+            </CheckBox>
+            <TextBlock TextWrapping="Wrap"
+                       Foreground="#585b70"
+                       FontSize="11"
+                       Margin="28,0,0,0"
+                       Text="Installs Node.js (if missing) and available AI CLI tools via npm. Some tools require sign-in after installation." />
+          </StackPanel>
+        </Border>
+
         <Button Content="Install →"
                 Command="{Binding GoToInstallCommand}"
                 HorizontalAlignment="Center"
