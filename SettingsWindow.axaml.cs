@@ -59,6 +59,7 @@ public partial class SettingsWindow : Window
 
         _voiceHotkeyCombo.SelectionChanged += (_, _) => CheckConflicts();
         _tileHotkeyCombo.SelectionChanged += (_, _) => CheckConflicts();
+        _gridLayoutCombo.SelectionChanged += OnGridLayoutChanged;
 
         LoadCurrentSettings();
     }
@@ -249,4 +250,14 @@ public partial class SettingsWindow : Window
     }
 
     private void OnCancelClick(object? sender, RoutedEventArgs e) => Close();
+
+    private void OnGridLayoutChanged(object? sender, SelectionChangedEventArgs e)
+    {
+        if (_gridLayoutCombo.SelectedItem is ComboBoxItem layoutItem)
+        {
+            _config.GridLayout = layoutItem.Tag as string ?? "2x3";
+            _config.Save();
+            SettingsSaved?.Invoke();
+        }
+    }
 }

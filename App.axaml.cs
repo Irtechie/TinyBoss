@@ -300,6 +300,17 @@ public class App : Application
         _currentPaneBounds = null;
     }
 
+    // ── Diagnostic log ─────────────────────────────────────────────────────
+    private static readonly string _diagLog = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "Programs", "TinyBoss", "drag_diag.log");
+
+    private static void Diag(string msg)
+    {
+        try { File.AppendAllText(_diagLog, $"[{DateTime.Now:HH:mm:ss.fff}] {msg}\n"); }
+        catch { /* best-effort */ }
+    }
+
     // ── Drag events → overlay highlighting + snap ────────────────────────────
 
     private nint _dragHwnd;
@@ -310,27 +321,41 @@ public class App : Application
         _dragHwnd = hwnd;
         _dragOverlayActive = false;
 
-        if (!TerminalDetector.IsTerminalWindow(hwnd)) return;
+        var isTerminal = TerminalDetector.IsTerminalWindow(hwnd);
+        Diag($"DRAG_START hwnd=0x{hwnd:X} isTerminal={isTerminal}");
+
+        if (!isTerminal) return;
 
         // Prune dead windows so grid size reflects reality
-        _tiling?.PruneDeadWindows();
+        var pruned = _tiling?.PruneDeadWindows() ?? false;
+        var slotBefore = _tiling?.FindSlotForHwnd(hwnd) ?? -1;
+        Diag($"  pruned={pruned} existingSlot={slotBefore} occupiedBefore={_tiling?.OccupiedCount}");
 
         // If this window is already tiled, remove from slot data only.
         // Do NOT rebalance here — SetWindowPos during drag kills the move operation.
         // Reflow happens at drag end.
         _tiling?.RemoveWindow(hwnd);
+        Diag($"  occupiedAfterRemove={_tiling?.OccupiedCount}");
 
+        // Always activate drag tracking for terminals — overlay will appear
+        // when cursor reaches any enabled monitor (via OnDragMoved).
         var monitor = TilingCoordinator.GetMonitorAtCursor();
-        if (!IsMonitorEnabled(monitor)) return;
+        var enabled = IsMonitorEnabled(monitor);
+        Diag($"  monitor=0x{monitor:X} enabled={enabled}");
 
         _dragOverlayActive = true;
-        Dispatcher.UIThread.Post(() => ShowDragOverlay(monitor));
+
+        if (enabled)
+        {
+            Dispatcher.UIThread.Post(() => ShowDragOverlay(monitor));
+        }
+        // If not enabled, overlay will show when cursor moves to an enabled monitor
     }
 
     /// <summary>Shows click-through overlay during drag (non-interactive).</summary>
     private void ShowDragOverlay(nint monitor)
     {
-        if (_overlay is not null) return;
+        if (_overlay is not null) { Diag($"SHOW_OVERLAY skip — already exists"); return; }
 
         _currentMonitor = monitor;
         var info = new MONITORINFO { cbSize = (uint)System.Runtime.InteropServices.Marshal.SizeOf<MONITORINFO>() };
@@ -342,6 +367,8 @@ public class App : Application
         var gridSize = isDifferentMonitor ? 1 : (_tiling?.GridSizeForNextWindow ?? 1);
         var layout = _config?.GridLayout ?? "2x3";
         _currentPaneBounds = TilingCoordinator.GetPaneBounds(monitor, gridSize, layout);
+
+        Diag($"SHOW_OVERLAY mon=0x{monitor:X} activeMon=0x{activeMonitor:X} diffMon={isDifferentMonitor} grid={gridSize} occupied={_tiling?.OccupiedCount}");
 
         _overlay = new TileOverlay();
         _overlay.SetLayout(layout);
@@ -362,12 +389,23 @@ public class App : Application
 
     private void OnDragMoved(int screenX, int screenY)
     {
-        if (!_dragOverlayActive || _overlay is null || _currentPaneBounds is null) return;
+        if (!_dragOverlayActive) return;
+
+        var monitor = TilingCoordinator.GetMonitorAtPoint(screenX, screenY);
+        if (monitor == nint.Zero || !IsMonitorEnabled(monitor)) return;
+
+        // No overlay yet (started on disabled monitor) — create it now
+        if (_overlay is null)
+        {
+            Diag($"DRAG_MOVED late_overlay on=0x{monitor:X}");
+            Dispatcher.UIThread.Post(() => ShowDragOverlay(monitor));
+            return;
+        }
 
         // If dragged to a different enabled monitor, move the overlay
-        var monitor = TilingCoordinator.GetMonitorAtPoint(screenX, screenY);
-        if (monitor != nint.Zero && monitor != _currentMonitor && IsMonitorEnabled(monitor))
+        if (monitor != _currentMonitor)
         {
+            Diag($"DRAG_MOVED monitor_change from=0x{_currentMonitor:X} to=0x{monitor:X}");
             Dispatcher.UIThread.Post(() =>
             {
                 DismissOverlay();
@@ -386,8 +424,11 @@ public class App : Application
         _dragHwnd = nint.Zero;
         _dragOverlayActive = false;
 
+        Diag($"DRAG_END hwnd=0x{hwnd:X} pos=({screenX},{screenY}) wasActive={wasActive} hasOverlay={_overlay is not null} hasBounds={_currentPaneBounds is not null}");
+
         if (!wasActive || _overlay is null || _currentPaneBounds is null)
         {
+            Diag($"  early exit — rebalance remaining={_tiling?.OccupiedCount}");
             // Overlay wasn't shown — rebalance remaining (window removed at drag start)
             if (_tiling is not null && _tiling.OccupiedCount > 0)
             {
@@ -400,6 +441,8 @@ public class App : Application
         }
 
         var slot = TilingCoordinator.HitTestSlot(screenX, screenY, _currentPaneBounds);
+        Diag($"  hitTest slot={slot} currentMon=0x{_currentMonitor:X} activeMon=0x{(_tiling?.ActiveMonitor ?? 0):X} occupied={_tiling?.OccupiedCount}");
+
         if (slot >= 0 && _tiling is not null)
         {
             var originalMonitor = _tiling.ActiveMonitor;
@@ -407,27 +450,28 @@ public class App : Application
                 && _currentMonitor != originalMonitor
                 && _tiling.OccupiedCount > 0;
 
+            Diag($"  diffMon={droppedOnDifferentMonitor} origMon=0x{originalMonitor:X}");
+
             if (droppedOnDifferentMonitor)
             {
-                // Rebalance remaining windows on the original monitor
                 _tiling.Rebalance(originalMonitor);
-
-                // Position just this window on the new monitor (don't use PositionAll
-                // which would move everything). Place it fullscreen on target monitor.
                 var targetInfo = new MONITORINFO { cbSize = (uint)System.Runtime.InteropServices.Marshal.SizeOf<MONITORINFO>() };
                 TilingCoordinator.GetMonitorInfo(_currentMonitor, ref targetInfo);
                 var wa = targetInfo.rcWork;
+                Diag($"  cross-mon snap to wa=({wa.Left},{wa.Top},{wa.Right},{wa.Bottom})");
                 TilingCoordinator.SetWindowPos(hwnd, nint.Zero,
                     wa.Left, wa.Top, wa.Right - wa.Left, wa.Bottom - wa.Top,
-                    0x0010 | 0x0004 | 0x0040); // SWP_NOACTIVATE | SWP_NOZORDER | SWP_SHOWWINDOW
-
+                    0x0010 | 0x0004 | 0x0040);
                 Dispatcher.UIThread.Post(DismissOverlay);
                 return;
             }
 
-            if (_tiling.IsSlotOccupied(slot))
+            var slotOccupied = _tiling.IsSlotOccupied(slot);
+            Diag($"  slotOccupied={slotOccupied}");
+            if (slotOccupied)
             {
                 var empty = _tiling.FindNextEmptySlot();
+                Diag($"  redirect to empty={empty}");
                 if (empty < 0)
                 {
                     Dispatcher.UIThread.Post(DismissOverlay);
@@ -445,6 +489,7 @@ public class App : Application
             }
 
             _tiling.AssignToSlot(slot, hwnd, sessionId);
+            Diag($"  ASSIGNED slot={slot} gridSize={_tiling.GridSize} total={_tiling.OccupiedCount}");
             _tiling.PositionAll(_currentMonitor);
 
             Dispatcher.UIThread.Post(() =>
@@ -464,8 +509,8 @@ public class App : Application
         }
         else
         {
+            Diag($"  no slot — rebalance remaining={_tiling?.OccupiedCount}");
             // Window dropped outside any tile zone — rebalance remaining windows
-            // (window was already removed from slot at drag start)
             if (_tiling is not null && _tiling.OccupiedCount > 0)
             {
                 var tilingMonitor = _tiling.ActiveMonitor;
