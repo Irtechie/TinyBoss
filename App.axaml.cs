@@ -349,8 +349,8 @@ public class App : Application
 
     private void OnSettingsSaved()
     {
-        if (_config is null || _tiling is null) return;
-        _tiling.GridSize = _config.NormalizedGridSize;
+        if (_config is null) return;
+        _hotkeys?.RequestReRegister();
         RebuildTrayMenu();
     }
 

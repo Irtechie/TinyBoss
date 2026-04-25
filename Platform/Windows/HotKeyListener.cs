@@ -13,17 +13,21 @@ public sealed class HotKeyListener : IDisposable
 {
     private const int WM_HOTKEY = 0x0312;
     private const int MOD_NOREPEAT = 0x4000;
-    private const int VK_SPACE = 0x20;
-    private const int VK_RMENU = 0xA5; // Right Alt
+    private const int MOD_CONTROL = 0x0002;
+    private const int MOD_SHIFT = 0x0004;
+    private const int MOD_ALT = 0x0001;
+    private const int VK_CONTROL = 0x11;
+    private const int VK_SHIFT = 0x10;
+    private const int VK_MENU = 0x12;  // Generic Alt
 
     // Hotkey IDs
-    public const int HOTKEY_VOICE = 1;
     public const int HOTKEY_TILE = 2;
     public const int HOTKEY_REBALANCE = 3;
 
     private nint _hwnd;
     private Thread? _messageThread;
     private volatile bool _disposed;
+    private volatile bool _reregisterRequested;
     private readonly TinyBossConfig _config;
     private readonly ILogger<HotKeyListener> _logger;
 
@@ -57,6 +61,9 @@ public sealed class HotKeyListener : IDisposable
     /// <summary>Tell the listener overlay is visible so it polls Tab/Escape.</summary>
     public void SetOverlayActive(bool active) => _overlayActive = active;
 
+    /// <summary>Request live re-registration of hotkeys after config change.</summary>
+    public void RequestReRegister() => _reregisterRequested = true;
+
     public void Start()
     {
         _messageThread = new Thread(MessagePumpThread)
@@ -77,9 +84,14 @@ public sealed class HotKeyListener : IDisposable
             return;
         }
 
-        // Voice uses Right Alt polling (no RegisterHotKey needed — standalone key)
-        RegisterHotKeyWithLog(HOTKEY_TILE, _config.TileModifiers | MOD_NOREPEAT, _config.TileKey, "Tile (Ctrl+Shift+G)");
-        RegisterHotKeyWithLog(HOTKEY_REBALANCE, _config.RebalanceModifiers | MOD_NOREPEAT, _config.RebalanceKey, "Rebalance (Ctrl+Shift+R)");
+        // Tile + Rebalance use RegisterHotKey; voice uses polling
+        var lastTileMods = _config.TileModifiers;
+        var lastTileKey = _config.TileKey;
+        var lastRebalMods = _config.RebalanceModifiers;
+        var lastRebalKey = _config.RebalanceKey;
+
+        RegisterHotKeyWithLog(HOTKEY_TILE, lastTileMods | MOD_NOREPEAT, lastTileKey, "Tile");
+        RegisterHotKeyWithLog(HOTKEY_REBALANCE, lastRebalMods | MOD_NOREPEAT, lastRebalKey, "Rebalance");
 
         var voiceDown = false;
         var tabWasDown = false;
@@ -87,6 +99,43 @@ public sealed class HotKeyListener : IDisposable
 
         while (!_disposed)
         {
+            // Live re-registration (rollback on failure)
+            if (_reregisterRequested)
+            {
+                _reregisterRequested = false;
+
+                var newTileMods = _config.TileModifiers;
+                var newTileKey = _config.TileKey;
+                var newRebalMods = _config.RebalanceModifiers;
+                var newRebalKey = _config.RebalanceKey;
+
+                UnregisterHotKey(_hwnd, HOTKEY_TILE);
+                if (!RegisterHotKey(_hwnd, HOTKEY_TILE, newTileMods | MOD_NOREPEAT, newTileKey))
+                {
+                    _logger.LogWarning("KH: New tile hotkey failed — rolling back");
+                    RegisterHotKey(_hwnd, HOTKEY_TILE, lastTileMods | MOD_NOREPEAT, lastTileKey);
+                }
+                else
+                {
+                    lastTileMods = newTileMods;
+                    lastTileKey = newTileKey;
+                    _logger.LogInformation("KH: Tile hotkey updated live");
+                }
+
+                UnregisterHotKey(_hwnd, HOTKEY_REBALANCE);
+                if (!RegisterHotKey(_hwnd, HOTKEY_REBALANCE, newRebalMods | MOD_NOREPEAT, newRebalKey))
+                {
+                    _logger.LogWarning("KH: New rebalance hotkey failed — rolling back");
+                    RegisterHotKey(_hwnd, HOTKEY_REBALANCE, lastRebalMods | MOD_NOREPEAT, lastRebalKey);
+                }
+                else
+                {
+                    lastRebalMods = newRebalMods;
+                    lastRebalKey = newRebalKey;
+                    _logger.LogInformation("KH: Rebalance hotkey updated live");
+                }
+            }
+
             if (PeekMessage(out var msg, _hwnd, 0, 0, PM_REMOVE))
             {
                 if (msg.message == WM_HOTKEY)
@@ -106,14 +155,14 @@ public sealed class HotKeyListener : IDisposable
                 DispatchMessage(ref msg);
             }
 
-            // Poll Right Alt for push-to-talk voice
-            bool rAltHeld = (GetAsyncKeyState(VK_RMENU) & 0x8000) != 0;
-            if (rAltHeld && !voiceDown)
+            // Poll voice push-to-talk (reads config dynamically — no re-register needed)
+            bool voiceHeld = IsVoiceComboHeld();
+            if (voiceHeld && !voiceDown)
             {
                 voiceDown = true;
                 VoiceKeyDown?.Invoke();
             }
-            else if (!rAltHeld && voiceDown)
+            else if (!voiceHeld && voiceDown)
             {
                 voiceDown = false;
                 VoiceKeyUp?.Invoke();
@@ -144,6 +193,15 @@ public sealed class HotKeyListener : IDisposable
         UnregisterHotKey(_hwnd, HOTKEY_TILE);
         UnregisterHotKey(_hwnd, HOTKEY_REBALANCE);
         DestroyWindow(_hwnd);
+    }
+
+    private bool IsVoiceComboHeld()
+    {
+        if ((GetAsyncKeyState(_config.VoiceKey) & 0x8000) == 0) return false;
+        if ((_config.VoiceModifiers & MOD_CONTROL) != 0 && (GetAsyncKeyState(VK_CONTROL) & 0x8000) == 0) return false;
+        if ((_config.VoiceModifiers & MOD_SHIFT) != 0 && (GetAsyncKeyState(VK_SHIFT) & 0x8000) == 0) return false;
+        if ((_config.VoiceModifiers & MOD_ALT) != 0 && (GetAsyncKeyState(VK_MENU) & 0x8000) == 0) return false;
+        return true;
     }
 
     private void RegisterHotKeyWithLog(int id, int modifiers, int vk, string label)

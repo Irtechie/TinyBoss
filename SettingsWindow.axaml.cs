@@ -6,12 +6,30 @@ using NAudio.CoreAudioApi;
 
 namespace TinyBoss;
 
+public sealed record HotkeyPreset(string Label, int Modifiers, int Key);
+
 public partial class SettingsWindow : Window
 {
     private readonly TinyBossConfig _config;
-    private readonly ComboBox _gridSizeCombo;
+    private readonly ComboBox _voiceHotkeyCombo;
+    private readonly ComboBox _tileHotkeyCombo;
     private readonly ComboBox _micCombo;
-    private readonly TextBlock _hotkeyDisplay;
+    private readonly TextBlock _conflictWarning;
+
+    private static readonly HotkeyPreset[] VoicePresets =
+    [
+        new("Right Alt (hold)", 0, 0xA5),
+        new("Shift + ` (~)", 0x0004, 0xC0),
+        new("Ctrl+Shift+Space", 0x0006, 0x20),
+    ];
+
+    private static readonly HotkeyPreset[] TilePresets =
+    [
+        new("Ctrl+Shift+G", 0x0006, 0x47),
+        new("Shift + ` (~)", 0x0004, 0xC0),
+        new("Ctrl+Shift+Space", 0x0006, 0x20),
+        new("Win + `", 0x0008, 0xC0),
+    ];
 
     public SettingsWindow() : this(new TinyBossConfig()) { }
 
@@ -20,15 +38,19 @@ public partial class SettingsWindow : Window
         _config = config;
         AvaloniaXamlLoader.Load(this);
 
-        _gridSizeCombo = this.FindControl<ComboBox>("GridSizeCombo")!;
+        _voiceHotkeyCombo = this.FindControl<ComboBox>("VoiceHotkeyCombo")!;
+        _tileHotkeyCombo = this.FindControl<ComboBox>("TileHotkeyCombo")!;
         _micCombo = this.FindControl<ComboBox>("MicCombo")!;
-        _hotkeyDisplay = this.FindControl<TextBlock>("HotkeyDisplay")!;
+        _conflictWarning = this.FindControl<TextBlock>("ConflictWarning")!;
 
         var saveButton = this.FindControl<Button>("SaveButton")!;
         var cancelButton = this.FindControl<Button>("CancelButton")!;
 
         saveButton.Click += OnSaveClick;
         cancelButton.Click += OnCancelClick;
+
+        _voiceHotkeyCombo.SelectionChanged += (_, _) => CheckConflicts();
+        _tileHotkeyCombo.SelectionChanged += (_, _) => CheckConflicts();
 
         LoadCurrentSettings();
     }
@@ -38,9 +60,11 @@ public partial class SettingsWindow : Window
 
     private void LoadCurrentSettings()
     {
-        // Grid size
-        int gridIdx = _config.NormalizedGridSize switch { 2 => 0, 6 => 2, _ => 1 };
-        _gridSizeCombo.SelectedIndex = gridIdx;
+        // Voice hotkey presets
+        PopulatePresets(_voiceHotkeyCombo, VoicePresets, _config.VoiceModifiers, _config.VoiceKey);
+
+        // Tile hotkey presets
+        PopulatePresets(_tileHotkeyCombo, TilePresets, _config.TileModifiers, _config.TileKey);
 
         // Microphone enumeration
         _micCombo.Items.Clear();
@@ -59,7 +83,7 @@ public partial class SettingsWindow : Window
                 var item = new ComboBoxItem { Content = dev.FriendlyName, Tag = dev.ID };
                 _micCombo.Items.Add(item);
                 if (_config.MicDeviceId == dev.ID)
-                    selectedIdx = i + 1; // +1 for "System Default"
+                    selectedIdx = i + 1;
             }
             if (selectedIdx > 0)
                 _micCombo.SelectedIndex = selectedIdx;
@@ -68,16 +92,69 @@ public partial class SettingsWindow : Window
         {
             // No audio devices — leave just "System Default"
         }
+    }
 
-        // Hotkey display
-        _hotkeyDisplay.Text = FormatHotkey(_config.VoiceModifiers, _config.VoiceKey);
+    private static void PopulatePresets(ComboBox combo, HotkeyPreset[] presets, int currentMods, int currentKey)
+    {
+        combo.Items.Clear();
+        int selectedIdx = 0;
+        for (int i = 0; i < presets.Length; i++)
+        {
+            var p = presets[i];
+            combo.Items.Add(new ComboBoxItem { Content = p.Label, Tag = p });
+            if (p.Modifiers == currentMods && p.Key == currentKey)
+                selectedIdx = i;
+        }
+        combo.SelectedIndex = selectedIdx;
+    }
+
+    private void CheckConflicts()
+    {
+        var voice = GetSelectedPreset(_voiceHotkeyCombo);
+        var tile = GetSelectedPreset(_tileHotkeyCombo);
+        if (voice is not null && tile is not null &&
+            voice.Modifiers == tile.Modifiers && voice.Key == tile.Key)
+        {
+            _conflictWarning.Text = "⚠ Voice and Tile hotkeys cannot be the same.";
+            _conflictWarning.IsVisible = true;
+        }
+        else
+        {
+            _conflictWarning.IsVisible = false;
+        }
+    }
+
+    private static HotkeyPreset? GetSelectedPreset(ComboBox combo)
+    {
+        return (combo.SelectedItem as ComboBoxItem)?.Tag as HotkeyPreset;
     }
 
     private void OnSaveClick(object? sender, RoutedEventArgs e)
     {
-        // Grid size
-        if (_gridSizeCombo.SelectedItem is ComboBoxItem gridItem && gridItem.Tag is string gridTag)
-            _config.GridSize = int.Parse(gridTag);
+        // Check for conflicts
+        var voice = GetSelectedPreset(_voiceHotkeyCombo);
+        var tile = GetSelectedPreset(_tileHotkeyCombo);
+        if (voice is not null && tile is not null &&
+            voice.Modifiers == tile.Modifiers && voice.Key == tile.Key)
+        {
+            _conflictWarning.Text = "⚠ Voice and Tile hotkeys cannot be the same. Pick different keys.";
+            _conflictWarning.IsVisible = true;
+            return;
+        }
+
+        // Voice hotkey
+        if (voice is not null)
+        {
+            _config.VoiceModifiers = voice.Modifiers;
+            _config.VoiceKey = voice.Key;
+        }
+
+        // Tile hotkey
+        if (tile is not null)
+        {
+            _config.TileModifiers = tile.Modifiers;
+            _config.TileKey = tile.Key;
+        }
 
         // Microphone
         if (_micCombo.SelectedItem is ComboBoxItem micItem)
@@ -89,22 +166,4 @@ public partial class SettingsWindow : Window
     }
 
     private void OnCancelClick(object? sender, RoutedEventArgs e) => Close();
-
-    private static string FormatHotkey(int modifiers, int vk)
-    {
-        var parts = new List<string>();
-        if ((modifiers & 0x0002) != 0) parts.Add("Ctrl");
-        if ((modifiers & 0x0004) != 0) parts.Add("Shift");
-        if ((modifiers & 0x0001) != 0) parts.Add("Alt");
-
-        string keyName = vk switch
-        {
-            0x20 => "Space",
-            0x47 => "G",
-            0x52 => "R",
-            _ => $"0x{vk:X2}",
-        };
-        parts.Add(keyName);
-        return string.Join("+", parts);
-    }
 }

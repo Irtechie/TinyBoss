@@ -2,21 +2,23 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         x:Class="TinyBoss.SettingsWindow"
         Title="TinyBoss Settings"
-        Width="420" Height="300"
+        Width="420" Height="360"
         CanResize="False"
         ShowInTaskbar="True"
         WindowStartupLocation="CenterScreen"
         Icon="/Assets/TinyBoss.ico">
   <StackPanel Margin="24" Spacing="16">
 
-    <!-- Grid Size -->
+    <!-- Voice Hotkey -->
     <StackPanel Spacing="4">
-      <TextBlock Text="Grid Layout" FontWeight="SemiBold" />
-      <ComboBox x:Name="GridSizeCombo" HorizontalAlignment="Stretch">
-        <ComboBoxItem Tag="2" Content="2 panes (side-by-side)" />
-        <ComboBoxItem Tag="4" Content="4 panes (2×2 grid)" />
-        <ComboBoxItem Tag="6" Content="6 panes (2×3 grid)" />
-      </ComboBox>
+      <TextBlock Text="Voice Push-to-Talk" FontWeight="SemiBold" />
+      <ComboBox x:Name="VoiceHotkeyCombo" HorizontalAlignment="Stretch" />
+    </StackPanel>
+
+    <!-- Tile Hotkey -->
+    <StackPanel Spacing="4">
+      <TextBlock Text="Tile Overlay Hotkey" FontWeight="SemiBold" />
+      <ComboBox x:Name="TileHotkeyCombo" HorizontalAlignment="Stretch" />
     </StackPanel>
 
     <!-- Microphone -->
@@ -25,14 +27,9 @@
       <ComboBox x:Name="MicCombo" HorizontalAlignment="Stretch" />
     </StackPanel>
 
-    <!-- Voice Hotkey -->
-    <StackPanel Spacing="4">
-      <TextBlock Text="Voice Hotkey" FontWeight="SemiBold" />
-      <StackPanel Orientation="Horizontal" Spacing="8">
-        <TextBlock x:Name="HotkeyDisplay" VerticalAlignment="Center"
-                   Text="Ctrl+Shift+Space" FontFamily="Consolas" />
-      </StackPanel>
-    </StackPanel>
+    <!-- Conflict warning -->
+    <TextBlock x:Name="ConflictWarning" Foreground="OrangeRed" FontSize="12"
+               TextWrapping="Wrap" IsVisible="False" />
 
     <!-- Buttons -->
     <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8" Margin="0,8,0,0">
