@@ -15,6 +15,7 @@ public partial class SettingsWindow : Window
     private readonly ComboBox _voiceHotkeyCombo;
     private readonly ComboBox _tileHotkeyCombo;
     private readonly ComboBox _micCombo;
+    private readonly ComboBox _gridLayoutCombo;
     private readonly StackPanel _monitorList;
     private readonly CheckBox _overrideSnapCheck;
     private readonly TextBlock _conflictWarning;
@@ -45,6 +46,7 @@ public partial class SettingsWindow : Window
         _voiceHotkeyCombo = this.FindControl<ComboBox>("VoiceHotkeyCombo")!;
         _tileHotkeyCombo = this.FindControl<ComboBox>("TileHotkeyCombo")!;
         _micCombo = this.FindControl<ComboBox>("MicCombo")!;
+        _gridLayoutCombo = this.FindControl<ComboBox>("GridLayoutCombo")!;
         _monitorList = this.FindControl<StackPanel>("MonitorList")!;
         _overrideSnapCheck = this.FindControl<CheckBox>("OverrideSnapCheck")!;
         _conflictWarning = this.FindControl<TextBlock>("ConflictWarning")!;
@@ -104,6 +106,12 @@ public partial class SettingsWindow : Window
 
         // Snap Layout override
         _overrideSnapCheck.IsChecked = _config.OverrideSnapLayouts;
+
+        // Grid layout
+        _gridLayoutCombo.Items.Clear();
+        _gridLayoutCombo.Items.Add(new ComboBoxItem { Content = "2 rows × 3 columns (wide)", Tag = "2x3" });
+        _gridLayoutCombo.Items.Add(new ComboBoxItem { Content = "3 rows × 2 columns (tall)", Tag = "3x2" });
+        _gridLayoutCombo.SelectedIndex = _config.GridLayout == "3x2" ? 1 : 0;
     }
 
     private void LoadMonitors()
@@ -230,6 +238,10 @@ public partial class SettingsWindow : Window
         // Snap Layout override
         _config.OverrideSnapLayouts = _overrideSnapCheck.IsChecked == true;
         SnapLayoutControl.Apply(_config.OverrideSnapLayouts);
+
+        // Grid layout
+        if (_gridLayoutCombo.SelectedItem is ComboBoxItem layoutItem)
+            _config.GridLayout = layoutItem.Tag as string ?? "2x3";
 
         _config.Save();
         SettingsSaved?.Invoke();

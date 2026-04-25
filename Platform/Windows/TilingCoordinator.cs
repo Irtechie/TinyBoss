@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
+using System.Text;
 
 namespace TinyBoss.Platform.Windows;
 
@@ -33,6 +34,9 @@ public sealed class TilingCoordinator : IDisposable
     /// <summary>Fires after any slot mutation. Subscribers must marshal to UI thread.</summary>
     public event Action? SlotsChanged;
 
+    /// <summary>Grid layout for 6-pane: "2x3" (2 rows × 3 cols) or "3x2" (3 rows × 2 cols).</summary>
+    public string Layout { get; set; } = "2x3";
+
     public TilingCoordinator(ILogger<TilingCoordinator> logger)
     {
         _logger = logger;
@@ -45,6 +49,22 @@ public sealed class TilingCoordinator : IDisposable
         {
             lock (_lock)
                 return OccupiedCount switch
+                {
+                    0 or 1 => 1,
+                    2 => 2,
+                    3 or 4 => 4,
+                    _ => 6,
+                };
+        }
+    }
+
+    /// <summary>Grid size that includes room for one more window (used during drag).</summary>
+    public int GridSizeForNextWindow
+    {
+        get
+        {
+            lock (_lock)
+                return (OccupiedCount + 1) switch
                 {
                     0 or 1 => 1,
                     2 => 2,
@@ -135,6 +155,26 @@ public sealed class TilingCoordinator : IDisposable
             _slots.Clear();
         }
         SlotsChanged?.Invoke();
+    }
+
+    /// <summary>
+    /// Remove any slots whose HWND is no longer valid (window closed/destroyed).
+    /// Returns true if any slots were pruned.
+    /// </summary>
+    public bool PruneDeadWindows()
+    {
+        bool pruned = false;
+        lock (_lock)
+        {
+            var dead = _slots.Where(kv => !IsWindow(kv.Value.Hwnd)).Select(kv => kv.Key).ToList();
+            foreach (var slot in dead)
+            {
+                RemoveSlotLocked(slot);
+                pruned = true;
+            }
+        }
+        if (pruned) SlotsChanged?.Invoke();
+        return pruned;
     }
 
     // ── Drag-aware reflow ────────────────────────────────────────────────────
@@ -230,9 +270,8 @@ public sealed class TilingCoordinator : IDisposable
             if (!_slots.TryGetValue(slot, out var tileSlot)) return;
             if (!IsWindow(tileSlot.Hwnd)) { RemoveSlotLocked(slot); return; }
 
-            var bounds = GetPaneBounds(monitorHandle, GridSize);
+            var bounds = GetPaneBounds(monitorHandle, GridSize, Layout);
             if (!bounds.TryGetValue(slot, out var rect)) return;
-
             // Restore window if minimized
             if (IsIconic(tileSlot.Hwnd))
                 ShowWindow(tileSlot.Hwnd, SW_RESTORE);
@@ -253,9 +292,7 @@ public sealed class TilingCoordinator : IDisposable
     {
         if (_slots.Count == 0) return;
 
-        var bounds = GetPaneBounds(monitorHandle, GridSize);
-
-        // Pre-validate — remove dead windows before batching
+        var bounds = GetPaneBounds(monitorHandle, GridSize, Layout);
         var deadSlots = _slots.Where(kv => !IsWindow(kv.Value.Hwnd)).Select(kv => kv.Key).ToList();
         foreach (var s in deadSlots) RemoveSlotLocked(s);
 
@@ -287,17 +324,17 @@ public sealed class TilingCoordinator : IDisposable
     /// <summary>
     /// Calculate pane bounds in physical pixels for a given monitor and grid size.
     /// </summary>
-    public static Dictionary<int, RECT> GetPaneBounds(nint monitorHandle, int gridSize)
+    public static Dictionary<int, RECT> GetPaneBounds(nint monitorHandle, int gridSize, string layout = "2x3")
     {
         var info = new MONITORINFO { cbSize = (uint)Marshal.SizeOf<MONITORINFO>() };
         GetMonitorInfo(monitorHandle, ref info);
-        return GetPaneBounds(monitorHandle, gridSize, info.rcWork);
+        return GetPaneBounds(monitorHandle, gridSize, info.rcWork, layout);
     }
 
     /// <summary>
     /// Calculate pane bounds from an explicit working area rectangle.
     /// </summary>
-    public static Dictionary<int, RECT> GetPaneBounds(nint monitorHandle, int gridSize, RECT wa)
+    public static Dictionary<int, RECT> GetPaneBounds(nint monitorHandle, int gridSize, RECT wa, string layout = "2x3")
     {
         int w = wa.Right - wa.Left;
         int h = wa.Bottom - wa.Top;
@@ -322,7 +359,18 @@ public sealed class TilingCoordinator : IDisposable
                 result[3] = new RECT(wa.Left + hw, wa.Top + hh, wa.Right, wa.Bottom);
                 break;
 
-            case 6: // 2×3
+            case 6 when layout == "3x2": // 3 rows × 2 cols
+                int cw = w / 2;
+                int rh = h / 3;
+                result[0] = new RECT(wa.Left, wa.Top, wa.Left + cw, wa.Top + rh);
+                result[1] = new RECT(wa.Left + cw, wa.Top, wa.Right, wa.Top + rh);
+                result[2] = new RECT(wa.Left, wa.Top + rh, wa.Left + cw, wa.Top + 2 * rh);
+                result[3] = new RECT(wa.Left + cw, wa.Top + rh, wa.Right, wa.Top + 2 * rh);
+                result[4] = new RECT(wa.Left, wa.Top + 2 * rh, wa.Left + cw, wa.Bottom);
+                result[5] = new RECT(wa.Left + cw, wa.Top + 2 * rh, wa.Right, wa.Bottom);
+                break;
+
+            case 6: // default 2×3 (2 rows × 3 cols)
                 int tw = w / 3;
                 int th = h / 2;
                 result[0] = new RECT(wa.Left, wa.Top, wa.Left + tw, wa.Top + th);
@@ -521,6 +569,20 @@ public sealed class TilingCoordinator : IDisposable
     [DllImport("user32.dll")] private static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, nint lParam);
     [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
     public static extern bool SetWindowText(nint hWnd, string lpString);
+    [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
+    public static extern int GetWindowText(nint hWnd, StringBuilder lpString, int nMaxCount);
+    [DllImport("user32.dll")]
+    public static extern int GetWindowTextLength(nint hWnd);
+
+    /// <summary>Get the title text of a window. Returns empty string on failure.</summary>
+    public static string GetWindowTitle(nint hwnd)
+    {
+        int len = GetWindowTextLength(hwnd);
+        if (len <= 0) return "";
+        var sb = new StringBuilder(len + 1);
+        GetWindowText(hwnd, sb, sb.Capacity);
+        return sb.ToString();
+    }
 }
 
 internal static class WaitHandleExtensions

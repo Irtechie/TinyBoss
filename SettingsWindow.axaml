@@ -37,7 +37,13 @@
     <!-- Snap Layout Override -->
     <StackPanel Spacing="4">
       <CheckBox x:Name="OverrideSnapCheck" Content="Replace Windows Snap Layouts with TinyBoss"
-                ToolTip.Tip="Disables the Windows 11 snap flyout. Drag a window to the top edge to show TinyBoss overlay instead." />
+                ToolTip.Tip="Disables the Windows 11 snap flyout. Drag a terminal to show TinyBoss overlay instead." />
+    </StackPanel>
+
+    <!-- Grid Layout -->
+    <StackPanel Spacing="4">
+      <TextBlock Text="6-Pane Grid Layout" FontWeight="SemiBold" />
+      <ComboBox x:Name="GridLayoutCombo" HorizontalAlignment="Stretch" />
     </StackPanel>
 
     <!-- Conflict warning -->

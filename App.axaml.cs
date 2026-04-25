@@ -47,6 +47,7 @@ public class App : Application
             _voice.StatusMessage += OnVoiceStatusMessage;
 
             _tiling = TinyBossServices.Provider.GetRequiredService<TilingCoordinator>();
+            _tiling.Layout = _config.GridLayout ?? "2x3";
             _tiling.SlotsChanged += OnSlotsChanged;
 
             _dragWatcher = TinyBossServices.Provider.GetRequiredService<DragWatcher>();
@@ -177,15 +178,20 @@ public class App : Application
 
         menu.Add(new NativeMenuItemSeparator());
 
-        // Tiled windows — rename entries
+        // Tiled windows — rename entries (prune dead windows first)
+        _tiling?.PruneDeadWindows();
         var tiledSnapshot = _tiling?.GetSnapshot() ?? new Dictionary<int, TileSlot>();
         if (tiledSnapshot.Count > 0)
         {
             foreach (var (slot, ts) in tiledSnapshot.OrderBy(kv => kv.Key))
             {
-                var label = ts.Alias ?? $"Window (slot {slot + 1})";
+                var title = TilingCoordinator.GetWindowTitle(ts.Hwnd);
+                var displayName = ts.Alias
+                    ?? (string.IsNullOrWhiteSpace(title) ? $"Window (slot {slot + 1})" : title);
+                if (displayName.Length > 40)
+                    displayName = displayName[..37] + "…";
                 var capturedSlot = slot;
-                var renameItem = new NativeMenuItem($"✏️ {label}");
+                var renameItem = new NativeMenuItem($"✏️ {displayName}");
                 renameItem.Click += (_, _) => ShowRenameDialog(capturedSlot, ts.Alias ?? "");
                 menu.Add(renameItem);
             }
@@ -261,13 +267,13 @@ public class App : Application
         TilingCoordinator.GetMonitorInfo(_currentMonitor, ref info);
 
         var gridSize = _tiling?.GridSize ?? 1;
-        _currentPaneBounds = TilingCoordinator.GetPaneBounds(_currentMonitor, gridSize);
+        var layout = _config?.GridLayout ?? "2x3";
+        _currentPaneBounds = TilingCoordinator.GetPaneBounds(_currentMonitor, gridSize, layout);
 
         _overlay = new TileOverlay();
+        _overlay.SetLayout(layout);
         _overlay.SetMonitorBounds(info.rcWork, info.rcMonitor);
         _overlay.SetGridSize(gridSize);
-
-        // Mark occupied slots with aliases
         var snapshot = _tiling?.GetSnapshot() ?? new Dictionary<int, TileSlot>();
         var aliases = snapshot.Where(kv => kv.Value.Alias is not null)
             .ToDictionary(kv => kv.Key, kv => kv.Value.Alias!);
@@ -304,13 +310,14 @@ public class App : Application
         _dragHwnd = hwnd;
         _dragOverlayActive = false;
 
-        // Only activate overlay for terminal windows on enabled monitors
         if (!TerminalDetector.IsTerminalWindow(hwnd)) return;
+
+        // Prune dead windows so grid size reflects reality
+        _tiling?.PruneDeadWindows();
 
         var monitor = TilingCoordinator.GetMonitorAtCursor();
         if (!IsMonitorEnabled(monitor)) return;
 
-        // Show full overlay immediately when a terminal is dragged
         _dragOverlayActive = true;
         Dispatcher.UIThread.Post(() => ShowDragOverlay(monitor));
     }
@@ -318,16 +325,18 @@ public class App : Application
     /// <summary>Shows click-through overlay during drag (non-interactive).</summary>
     private void ShowDragOverlay(nint monitor)
     {
-        if (_overlay is not null) return; // already showing from hotkey
+        if (_overlay is not null) return;
 
         _currentMonitor = monitor;
         var info = new MONITORINFO { cbSize = (uint)System.Runtime.InteropServices.Marshal.SizeOf<MONITORINFO>() };
         TilingCoordinator.GetMonitorInfo(monitor, ref info);
 
-        var gridSize = _tiling?.GridSize ?? 1;
-        _currentPaneBounds = TilingCoordinator.GetPaneBounds(monitor, gridSize);
+        var gridSize = _tiling?.GridSizeForNextWindow ?? 1;
+        var layout = _config?.GridLayout ?? "2x3";
+        _currentPaneBounds = TilingCoordinator.GetPaneBounds(monitor, gridSize, layout);
 
         _overlay = new TileOverlay();
+        _overlay.SetLayout(layout);
         _overlay.SetMonitorBounds(info.rcWork, info.rcMonitor);
         _overlay.SetGridSize(gridSize);
 
@@ -337,7 +346,7 @@ public class App : Application
         _overlay.SetOccupiedSlots(new HashSet<int>(snapshot.Keys), aliases);
 
         _overlay.DismissRequested += () => Dispatcher.UIThread.Post(DismissOverlay);
-        _overlay.Show(); // WS_EX_TRANSPARENT applied automatically — won't steal focus
+        _overlay.Show();
     }
 
     private void OnDragMoved(int screenX, int screenY)
@@ -406,7 +415,7 @@ public class App : Application
                     .ToDictionary(kv => kv.Key, kv => kv.Value.Alias!);
                 _overlay?.SetOccupiedSlots(new HashSet<int>(snapshot.Keys), aliases);
                 _overlay?.HighlightZone(-1);
-                _currentPaneBounds = TilingCoordinator.GetPaneBounds(_currentMonitor, gridSize);
+                _currentPaneBounds = TilingCoordinator.GetPaneBounds(_currentMonitor, gridSize, _config?.GridLayout ?? "2x3");
 
                 // Brief flash then dismiss
                 Task.Delay(400).ContinueWith(_ => Dispatcher.UIThread.Post(DismissOverlay));
@@ -440,6 +449,8 @@ public class App : Application
     {
         if (_config is null) return;
         _hotkeys?.RequestReRegister();
+        if (_tiling is not null)
+            _tiling.Layout = _config.GridLayout ?? "2x3";
         RebuildTrayMenu();
     }
 

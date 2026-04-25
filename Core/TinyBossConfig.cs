@@ -54,6 +54,13 @@ public sealed class TinyBossConfig
     /// </summary>
     public bool OverrideSnapLayouts { get; set; } = true;
 
+    // ── Grid Layout ──────────────────────────────────────────────────────────
+    /// <summary>
+    /// Layout for the 6-pane grid. "2x3" = 2 rows × 3 cols (default),
+    /// "3x2" = 3 rows × 2 cols.
+    /// </summary>
+    public string GridLayout { get; set; } = "2x3";
+
     // ── Whisper ──────────────────────────────────────────────────────────────
     public string ModelDir { get; set; } = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),

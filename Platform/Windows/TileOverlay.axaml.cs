@@ -32,11 +32,12 @@ public partial class TileOverlay : Window
     private int _highlightedSlot = -1;
     private HashSet<int> _occupiedSlots = new();
     private Dictionary<int, string> _slotAliases = new();
-    private bool _isDockStripMode = true;
+    private bool _isDockStripMode = false;
 
     // Monitor working area in physical pixels (set before showing)
     private RECT _workArea;
     private RECT _monitorBounds;
+    private string _layout = "2x3";
 
     // Win32 extended style constants
     private const int GWL_EXSTYLE = -20;
@@ -101,6 +102,9 @@ public partial class TileOverlay : Window
 
     /// <summary>Fires when a slot is right-clicked for rename. Arg: slot index.</summary>
     public event Action<int>? RenameRequested;
+
+    /// <summary>Set the 6-pane layout: "2x3" or "3x2".</summary>
+    public void SetLayout(string layout) { _layout = layout; }
 
     /// <summary>Set the monitor working area and position the overlay to fill it.</summary>
     public void SetMonitorBounds(RECT workArea, RECT monitorBounds)
@@ -202,7 +206,7 @@ public partial class TileOverlay : Window
     {
         _canvas.Children.Clear();
 
-        var bounds = TilingCoordinator.GetPaneBounds(nint.Zero, _gridSize, _workArea);
+        var bounds = TilingCoordinator.GetPaneBounds(nint.Zero, _gridSize, _workArea, _layout);
         // Physical pixel overlay origin
         var overlayLeft = (int)Position.X;
         var overlayTop = (int)Position.Y;
