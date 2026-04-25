@@ -23,7 +23,7 @@ public partial class TileOverlay : Window
     private static readonly IBrush ZoneBrush = new SolidColorBrush(Color.FromArgb(40, 100, 149, 237));
     private static readonly IBrush ZoneBorderBrush = new SolidColorBrush(Color.FromArgb(180, 100, 149, 237));
     private static readonly IBrush HighlightBrush = new SolidColorBrush(Color.FromArgb(80, 50, 205, 50));
-    private static readonly IBrush OccupiedBrush = new SolidColorBrush(Color.FromArgb(60, 255, 165, 0));
+    private static readonly IBrush OccupiedBrush = new SolidColorBrush(Color.FromArgb(80, 128, 0, 255));
     private static readonly IBrush DockStripBrush = new SolidColorBrush(Color.FromArgb(200, 40, 40, 40));
     private static readonly IBrush DockStripBorder = new SolidColorBrush(Color.FromArgb(180, 100, 149, 237));
 
