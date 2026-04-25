@@ -1,7 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
-namespace KittenHerder.Core;
+namespace TinyBoss.Core;
 
 /// <summary>
 /// Persisted configuration for TinyBoss. Atomic JSON read/write to
@@ -27,8 +27,8 @@ public sealed class TinyBossConfig
     public int GridSize { get; set; } = 4;
 
     // ── Hotkeys (virtual key codes + modifiers) ──────────────────────────────
-    public int VoiceModifiers { get; set; } = 0x0002 | 0x0004; // Ctrl+Shift
-    public int VoiceKey { get; set; } = 0x20;                   // Space
+    public int VoiceModifiers { get; set; } = 0;      // No modifier — standalone key
+    public int VoiceKey { get; set; } = 0xA5;           // Right Alt (VK_RMENU)
 
     public int TileModifiers { get; set; } = 0x0002 | 0x0004;   // Ctrl+Shift
     public int TileKey { get; set; } = 0x47;                     // G

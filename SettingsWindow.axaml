@@ -1,6 +1,6 @@
 <Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        x:Class="KittenHerder.SettingsWindow"
+        x:Class="TinyBoss.SettingsWindow"
         Title="TinyBoss Settings"
         Width="420" Height="300"
         CanResize="False"

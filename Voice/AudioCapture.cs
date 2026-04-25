@@ -2,7 +2,7 @@ using NAudio.CoreAudioApi;
 using NAudio.Wave;
 using NAudio.Wave.SampleProviders;
 
-namespace KittenHerder.Voice;
+namespace TinyBoss.Voice;
 
 /// <summary>
 /// Captures microphone audio via WASAPI shared mode, resamples to 16kHz mono float32

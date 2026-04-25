@@ -1,8 +1,8 @@
 using System.Text.Json;
-using KittenHerder.Core;
-using KittenHerder.Protocol;
+using TinyBoss.Core;
+using TinyBoss.Protocol;
 
-namespace KittenHerder.Handlers;
+namespace TinyBoss.Handlers;
 
 /// <summary>
 /// Delivers a user's answer to a pending ask_user question in an Inferno pipeline session.

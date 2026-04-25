@@ -1,7 +1,7 @@
 using System.Runtime.InteropServices;
-using KittenHerder.Core;
+using TinyBoss.Core;
 
-namespace KittenHerder.Voice;
+namespace TinyBoss.Voice;
 
 /// <summary>
 /// Injects transcribed voice text into managed session stdin.

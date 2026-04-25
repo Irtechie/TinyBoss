@@ -1,8 +1,8 @@
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
-using KittenHerder.Core;
+using TinyBoss.Core;
 
-namespace KittenHerder.Platform.Windows;
+namespace TinyBoss.Platform.Windows;
 
 /// <summary>
 /// Listens for global hotkeys via a Win32 message-only window (HWND_MESSAGE).
@@ -14,6 +14,7 @@ public sealed class HotKeyListener : IDisposable
     private const int WM_HOTKEY = 0x0312;
     private const int MOD_NOREPEAT = 0x4000;
     private const int VK_SPACE = 0x20;
+    private const int VK_RMENU = 0xA5; // Right Alt
 
     // Hotkey IDs
     public const int HOTKEY_VOICE = 1;
@@ -76,7 +77,7 @@ public sealed class HotKeyListener : IDisposable
             return;
         }
 
-        RegisterHotKeyWithLog(HOTKEY_VOICE, _config.VoiceModifiers | MOD_NOREPEAT, _config.VoiceKey, "Voice (Ctrl+Shift+Space)");
+        // Voice uses Right Alt polling (no RegisterHotKey needed — standalone key)
         RegisterHotKeyWithLog(HOTKEY_TILE, _config.TileModifiers | MOD_NOREPEAT, _config.TileKey, "Tile (Ctrl+Shift+G)");
         RegisterHotKeyWithLog(HOTKEY_REBALANCE, _config.RebalanceModifiers | MOD_NOREPEAT, _config.RebalanceKey, "Rebalance (Ctrl+Shift+R)");
 
@@ -92,10 +93,6 @@ public sealed class HotKeyListener : IDisposable
                 {
                     switch ((int)msg.wParam)
                     {
-                        case HOTKEY_VOICE:
-                            voiceDown = true;
-                            VoiceKeyDown?.Invoke();
-                            break;
                         case HOTKEY_TILE:
                             TileKeyPressed?.Invoke();
                             break;
@@ -109,15 +106,17 @@ public sealed class HotKeyListener : IDisposable
                 DispatchMessage(ref msg);
             }
 
-            // Poll for voice key release
-            if (voiceDown)
+            // Poll Right Alt for push-to-talk voice
+            bool rAltHeld = (GetAsyncKeyState(VK_RMENU) & 0x8000) != 0;
+            if (rAltHeld && !voiceDown)
             {
-                bool spaceHeld = (GetAsyncKeyState(VK_SPACE) & 0x8000) != 0;
-                if (!spaceHeld)
-                {
-                    voiceDown = false;
-                    VoiceKeyUp?.Invoke();
-                }
+                voiceDown = true;
+                VoiceKeyDown?.Invoke();
+            }
+            else if (!rAltHeld && voiceDown)
+            {
+                voiceDown = false;
+                VoiceKeyUp?.Invoke();
             }
 
             // Poll for Tab/Escape when overlay is active
@@ -142,7 +141,6 @@ public sealed class HotKeyListener : IDisposable
             Thread.Sleep(voiceDown ? 10 : 50);
         }
 
-        UnregisterHotKey(_hwnd, HOTKEY_VOICE);
         UnregisterHotKey(_hwnd, HOTKEY_TILE);
         UnregisterHotKey(_hwnd, HOTKEY_REBALANCE);
         DestroyWindow(_hwnd);
@@ -207,20 +205,20 @@ public sealed class HotKeyListener : IDisposable
     [DllImport("user32.dll")]
     private static extern nint DispatchMessage(ref MSG lpMsg);
 
-    [DllImport("user32.dll")]
+    [DllImport("user32.dll", CharSet = CharSet.Auto)]
     private static extern nint DefWindowProc(nint hWnd, uint msg, nint wParam, nint lParam);
 
-    [DllImport("user32.dll", SetLastError = true)]
+    [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
     private static extern ushort RegisterClassEx(ref WNDCLASSEX lpWndClass);
 
-    [DllImport("user32.dll", SetLastError = true)]
+    [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
     private static extern nint CreateWindowEx(uint dwExStyle, string lpClassName, string? lpWindowName,
         uint dwStyle, int x, int y, int nWidth, int nHeight, nint hWndParent, nint hMenu, nint hInstance, nint lpParam);
 
     [DllImport("user32.dll")]
     private static extern bool DestroyWindow(nint hWnd);
 
-    [DllImport("kernel32.dll")]
+    [DllImport("kernel32.dll", CharSet = CharSet.Auto)]
     private static extern nint GetModuleHandle(string? lpModuleName);
 
     [StructLayout(LayoutKind.Sequential)]

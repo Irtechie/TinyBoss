@@ -6,9 +6,9 @@ using Avalonia.Markup.Xaml;
 using Avalonia.Media;
 using Avalonia.Platform.Storage;
 using System.Runtime.Versioning;
-using static KittenHerder.Platform.Windows.TilingCoordinator;
+using static TinyBoss.Platform.Windows.TilingCoordinator;
 
-namespace KittenHerder.Platform.Windows;
+namespace TinyBoss.Platform.Windows;
 
 /// <summary>
 /// Transparent fullscreen overlay showing tiling grid zones.
@@ -51,10 +51,11 @@ public partial class TileOverlay : Window
     {
         _workArea = workArea;
 
-        // Position uses physical pixels in Avalonia
+        // Position uses physical pixels; Width/Height use logical (DIP) units
         Position = new PixelPoint(monitorBounds.Left, monitorBounds.Top);
-        Width = monitorBounds.Width;
-        Height = monitorBounds.Height;
+        var scale = RenderScaling > 0 ? RenderScaling : 1.0;
+        Width = monitorBounds.Width / scale;
+        Height = monitorBounds.Height / scale;
     }
 
     /// <summary>Update which grid size to display.</summary>
@@ -92,16 +93,18 @@ public partial class TileOverlay : Window
         _canvas.Children.Clear();
 
         var bounds = TilingCoordinator.GetPaneBounds(nint.Zero, _gridSize, _workArea);
-        // Convert physical pixel pane bounds to overlay-local coordinates
+        // Physical pixel overlay origin
         var overlayLeft = (int)Position.X;
         var overlayTop = (int)Position.Y;
+        // DPI scale: physical pixels → logical (DIP) for Avalonia Canvas
+        var scale = RenderScaling > 0 ? RenderScaling : 1.0;
 
         foreach (var (slot, rect) in bounds)
         {
-            var localLeft = rect.Left - overlayLeft;
-            var localTop = rect.Top - overlayTop;
-            var w = rect.Width;
-            var h = rect.Height;
+            var localLeft = (rect.Left - overlayLeft) / scale;
+            var localTop = (rect.Top - overlayTop) / scale;
+            var w = rect.Width / scale;
+            var h = rect.Height / scale;
 
             IBrush fill;
             if (slot == _highlightedSlot)

@@ -1,7 +1,7 @@
 using Whisper.net;
 using Whisper.net.Ggml;
 
-namespace KittenHerder.Voice;
+namespace TinyBoss.Voice;
 
 /// <summary>
 /// Manages Whisper.net model lifecycle with lazy loading, single Factory/Processor reuse,

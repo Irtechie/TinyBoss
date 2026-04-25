@@ -3,12 +3,12 @@ using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Markup.Xaml;
 using Avalonia.Threading;
-using KittenHerder.Core;
-using KittenHerder.Platform.Windows;
-using KittenHerder.Voice;
-using static KittenHerder.Platform.Windows.TilingCoordinator;
+using TinyBoss.Core;
+using TinyBoss.Platform.Windows;
+using TinyBoss.Voice;
+using static TinyBoss.Platform.Windows.TilingCoordinator;
 
-namespace KittenHerder;
+namespace TinyBoss;
 
 public class App : Application
 {
@@ -286,6 +286,23 @@ public class App : Application
         var slot = TilingCoordinator.HitTestSlot(screenX, screenY, _currentPaneBounds);
         if (slot >= 0 && _tiling is not null)
         {
+            // Don't overwrite an occupied slot — find the first empty one instead
+            if (_tiling.IsSlotOccupied(slot))
+            {
+                var gridSize = _tiling.GridSize;
+                int? emptySlot = null;
+                for (int i = 0; i < gridSize; i++)
+                {
+                    if (!_tiling.IsSlotOccupied(i))
+                    {
+                        emptySlot = i;
+                        break;
+                    }
+                }
+                if (emptySlot is null) return; // All full, do nothing
+                slot = emptySlot.Value;
+            }
+
             // Find session ID if this is a managed session
             string? sessionId = null;
             if (_registry is not null)

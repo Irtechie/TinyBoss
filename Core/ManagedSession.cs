@@ -2,7 +2,7 @@ using System.Diagnostics;
 using System.Text.Json;
 using System.Threading.Channels;
 
-namespace KittenHerder.Core;
+namespace TinyBoss.Core;
 
 /// <summary>
 /// Composite key that prevents PID-recycling false positives.
@@ -10,7 +10,7 @@ namespace KittenHerder.Core;
 public readonly record struct SessionKey(int Pid, DateTimeOffset StartTime);
 
 /// <summary>
-/// A live process managed by KittenHerder.
+/// A live process managed by TinyBoss.
 /// Owns the Process, stdout Channel, and surface origin tracking.
 /// </summary>
 public sealed class ManagedSession : IAsyncDisposable

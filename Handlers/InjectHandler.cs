@@ -1,9 +1,9 @@
 using System.Net.WebSockets;
 using System.Text.Json;
-using KittenHerder.Core;
-using KittenHerder.Protocol;
+using TinyBoss.Core;
+using TinyBoss.Protocol;
 
-namespace KittenHerder.Handlers;
+namespace TinyBoss.Handlers;
 
 /// <summary>
 /// Injects text into a running session's stdin.

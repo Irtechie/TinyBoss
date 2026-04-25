@@ -2,7 +2,7 @@ using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 
-namespace KittenHerder.Platform.Windows;
+namespace TinyBoss.Platform.Windows;
 
 /// <summary>
 /// Slot numbering for each grid layout:

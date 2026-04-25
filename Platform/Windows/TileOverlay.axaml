@@ -1,6 +1,6 @@
 <Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        x:Class="KittenHerder.Platform.Windows.TileOverlay"
+        x:Class="TinyBoss.Platform.Windows.TileOverlay"
         Title="TinyBoss Tile Overlay"
         TransparencyLevelHint="Transparent"
         Background="Transparent"

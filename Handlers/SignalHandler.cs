@@ -1,8 +1,8 @@
 using System.Text.Json;
-using KittenHerder.Core;
-using KittenHerder.Protocol;
+using TinyBoss.Core;
+using TinyBoss.Protocol;
 
-namespace KittenHerder.Handlers;
+namespace TinyBoss.Handlers;
 
 /// <summary>Sends Ctrl+C or Ctrl+Break to a running session.</summary>
 public sealed class SignalHandler

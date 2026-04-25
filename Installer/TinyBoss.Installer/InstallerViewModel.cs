@@ -155,7 +155,7 @@ public partial class InstallerViewModel : ObservableObject
         }
         else
         {
-            OverallStatus = "Could not find KittenHerder.exe — launch manually.";
+            OverallStatus = "Could not find TinyBoss.exe — launch manually.";
             return;
         }
 

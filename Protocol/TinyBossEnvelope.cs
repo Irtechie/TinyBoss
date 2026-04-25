@@ -1,10 +1,10 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
-namespace KittenHerder.Protocol;
+namespace TinyBoss.Protocol;
 
 /// <summary>
-/// Wire envelope for all KittenHerder ↔ PitBoss messages.
+/// Wire envelope for all TinyBoss ↔ PitBoss messages.
 /// Intentionally separate from SynapseEnvelope — independently versionable.
 /// </summary>
 public sealed class KhEnvelope

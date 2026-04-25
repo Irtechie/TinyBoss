@@ -1,6 +1,6 @@
 using System.Text.RegularExpressions;
 
-namespace KittenHerder.Voice;
+namespace TinyBoss.Voice;
 
 /// <summary>
 /// 4-layer defense against Whisper hallucinations and dangerous commands.

@@ -1,11 +1,11 @@
 using Avalonia;
 using Avalonia.Controls;
-using KittenHerder;
-using KittenHerder.Core;
-using KittenHerder.Handlers;
-using KittenHerder.Platform.Windows;
-using KittenHerder.Protocol;
-using KittenHerder.Voice;
+using TinyBoss;
+using TinyBoss.Core;
+using TinyBoss.Handlers;
+using TinyBoss.Platform.Windows;
+using TinyBoss.Protocol;
+using TinyBoss.Voice;
 
 // ── Single-instance mutex ────────────────────────────────────────────────────
 using var mutex = new Mutex(true, @"Global\TinyBoss", out bool isFirst);
@@ -52,9 +52,9 @@ builder.Services.AddSingleton<DragWatcher>();
 var app = builder.Build();
 app.UseWebSockets();
 
-var authToken = Environment.GetEnvironmentVariable("PITBOSS_AUTH_KITTENHERDER") ?? string.Empty;
+var authToken = Environment.GetEnvironmentVariable("PITBOSS_AUTH_TinyBoss") ?? string.Empty;
 if (string.IsNullOrEmpty(authToken))
-    app.Logger.LogWarning("PITBOSS_AUTH_KITTENHERDER not set — running in open dev mode");
+    app.Logger.LogWarning("PITBOSS_AUTH_TinyBoss not set — running in open dev mode");
 
 // ── Single multiplexed WebSocket endpoint (same protocol, transport changed) ──
 app.MapGet("/ws", async (HttpContext ctx,

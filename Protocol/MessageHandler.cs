@@ -2,11 +2,11 @@ using System.Net.WebSockets;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
-using KittenHerder.Core;
-using KittenHerder.Handlers;
-using KittenHerder.Protocol;
+using TinyBoss.Core;
+using TinyBoss.Handlers;
+using TinyBoss.Protocol;
 
-namespace KittenHerder.Protocol;
+namespace TinyBoss.Protocol;
 
 /// <summary>
 /// Dispatches inbound KhEnvelopes to the appropriate handler.
@@ -99,7 +99,7 @@ public sealed class MessageHandler
         var ack = new KhEnvelope
         {
             Type = KhMessageType.HelloAck,
-            Payload = JsonSerializer.SerializeToElement(new AckPayload(true, "KittenHerder ready"))
+            Payload = JsonSerializer.SerializeToElement(new AckPayload(true, "TinyBoss ready"))
         };
         await EnqueueSendAsync(ack, ct);
         _logger.LogInformation("KH: PitBoss connected and authenticated");

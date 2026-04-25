@@ -32,6 +32,7 @@
     <Content Include="Assets\TinyBoss.ico">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
+    <AvaloniaResource Include="Assets\TinyBoss.ico" />
   </ItemGroup>
 
   <!-- Exclude installer project from this build -->

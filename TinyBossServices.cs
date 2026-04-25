@@ -1,4 +1,4 @@
-namespace KittenHerder;
+namespace TinyBoss;
 
 /// <summary>
 /// Static service locator bridging Kestrel DI and Avalonia App.

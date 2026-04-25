@@ -1,8 +1,8 @@
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
-using static KittenHerder.Platform.Windows.TilingCoordinator;
+using static TinyBoss.Platform.Windows.TilingCoordinator;
 
-namespace KittenHerder.Platform.Windows;
+namespace TinyBoss.Platform.Windows;
 
 /// <summary>
 /// Watches for window drag events via SetWinEventHook.

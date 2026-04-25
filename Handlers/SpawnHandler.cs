@@ -3,10 +3,10 @@ using System.Linq;
 using System.Net.WebSockets;
 using System.Text.Json;
 using System.Threading.Channels;
-using KittenHerder.Core;
-using KittenHerder.Protocol;
+using TinyBoss.Core;
+using TinyBoss.Protocol;
 
-namespace KittenHerder.Handlers;
+namespace TinyBoss.Handlers;
 
 /// <summary>
 /// Handles "spawn" messages: validates allowlist, starts process, pumps stdout.
@@ -20,7 +20,7 @@ public sealed class SpawnHandler
     // Env var override lets logos.env or service config point at a custom path.
     // Default: allowed_executables.txt alongside the exe (works under any service account).
     private static readonly string AllowlistPath =
-        Environment.GetEnvironmentVariable("KITTENHERDER_ALLOWLIST_PATH")
+        Environment.GetEnvironmentVariable("TinyBoss_ALLOWLIST_PATH")
         ?? Path.Combine(AppContext.BaseDirectory, "allowed_executables.txt");
 
     public SpawnHandler(SessionRegistry registry, ILogger<SpawnHandler> logger)

@@ -1,10 +1,10 @@
 using Avalonia.Controls;
 using Avalonia.Interactivity;
 using Avalonia.Markup.Xaml;
-using KittenHerder.Core;
+using TinyBoss.Core;
 using NAudio.CoreAudioApi;
 
-namespace KittenHerder;
+namespace TinyBoss;
 
 public partial class SettingsWindow : Window
 {

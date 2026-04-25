@@ -1,6 +1,6 @@
-using KittenHerder.Platform.Windows;
+using TinyBoss.Platform.Windows;
 
-namespace KittenHerder.Voice;
+namespace TinyBoss.Voice;
 
 /// <summary>
 /// Orchestrates the full voice flow:

@@ -2,7 +2,7 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Text.Json;
 
-namespace KittenHerder.Core;
+namespace TinyBoss.Core;
 
 /// <summary>
 /// Tracks all active ManagedSessions. Persists to disk on every mutation.
@@ -24,7 +24,7 @@ public sealed class SessionRegistry
         _logger = logger;
         _persistDir = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "KittenHerder");
+            "TinyBoss");
         _persistPath = Path.Combine(_persistDir, "sessions.json");
         Directory.CreateDirectory(_persistDir);
         ValidatePersistedSessions();
