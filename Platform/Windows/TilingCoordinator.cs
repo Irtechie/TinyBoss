@@ -91,6 +91,17 @@ public sealed class TilingCoordinator : IDisposable
         lock (_lock) return _slots.ContainsKey(slot);
     }
 
+    /// <summary>Find which slot a given HWND occupies. Returns -1 if not tiled.</summary>
+    public int FindSlotForHwnd(nint hwnd)
+    {
+        lock (_lock)
+        {
+            foreach (var kv in _slots)
+                if (kv.Value.Hwnd == hwnd) return kv.Key;
+            return -1;
+        }
+    }
+
     // ── Core mutations (serialized) ──────────────────────────────────────────
 
     /// <summary>

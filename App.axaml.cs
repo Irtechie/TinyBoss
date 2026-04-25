@@ -377,6 +377,16 @@ public class App : Application
 
         if (!wasActive || _overlay is null || _currentPaneBounds is null)
         {
+            // Overlay wasn't shown, but if this window was tiled, un-tile and reflow
+            if (_tiling is not null)
+            {
+                var prevSlot = _tiling.FindSlotForHwnd(hwnd);
+                if (prevSlot >= 0)
+                {
+                    _tiling.RemoveWindow(hwnd);
+                    _tiling.Rebalance(_currentMonitor);
+                }
+            }
             Dispatcher.UIThread.Post(DismissOverlay);
             return;
         }
@@ -423,6 +433,16 @@ public class App : Application
         }
         else
         {
+            // Window dropped outside any tile zone — if it was tiled, un-tile it and reflow
+            if (_tiling is not null)
+            {
+                var prevSlot = _tiling.FindSlotForHwnd(hwnd);
+                if (prevSlot >= 0)
+                {
+                    _tiling.RemoveWindow(hwnd);
+                    _tiling.Rebalance(_currentMonitor);
+                }
+            }
             Dispatcher.UIThread.Post(DismissOverlay);
         }
     }
