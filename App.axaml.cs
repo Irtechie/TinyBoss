@@ -315,6 +315,20 @@ public class App : Application
         // Prune dead windows so grid size reflects reality
         _tiling?.PruneDeadWindows();
 
+        // If this window is already tiled, un-tile it and reflow immediately.
+        // Overlay still shows so user can drop it on a different slot.
+        if (_tiling is not null)
+        {
+            var existingSlot = _tiling.FindSlotForHwnd(hwnd);
+            if (existingSlot >= 0)
+            {
+                var tilingMonitor = _tiling.ActiveMonitor;
+                _tiling.RemoveWindow(hwnd);
+                if (tilingMonitor != nint.Zero && _tiling.OccupiedCount > 0)
+                    _tiling.Rebalance(tilingMonitor);
+            }
+        }
+
         var monitor = TilingCoordinator.GetMonitorAtCursor();
         if (!IsMonitorEnabled(monitor)) return;
 
