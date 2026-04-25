@@ -1,0 +1,231 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:local="clr-namespace:TinyBoss.Installer"
+        mc:Ignorable="d" d:DesignWidth="600" d:DesignHeight="500"
+        x:Class="TinyBoss.Installer.InstallerWindow"
+        x:DataType="local:InstallerViewModel"
+        Title="TinyBoss — Setup"
+        Width="600" Height="500"
+        MinWidth="450" MinHeight="400"
+        CanResize="False"
+        WindowStartupLocation="CenterScreen"
+        Background="#11111b">
+
+  <Grid RowDefinitions="Auto,*,Auto">
+
+    <!-- ══════════ HEADER ══════════ -->
+    <Border Grid.Row="0"
+            Background="#1e1e2e"
+            Padding="20,16"
+            BorderBrush="#313244"
+            BorderThickness="0,0,0,1">
+      <StackPanel HorizontalAlignment="Center" Spacing="6" Orientation="Horizontal">
+        <Image Source="avares://TinyBoss.Installer/Assets/TinyBossIcon.png"
+               Width="64" Height="64"
+               Stretch="Uniform"
+               RenderOptions.BitmapInterpolationMode="HighQuality"
+               VerticalAlignment="Center" />
+        <StackPanel VerticalAlignment="Center" Spacing="2">
+          <TextBlock Text="TinyBoss"
+                     FontSize="28" FontWeight="Bold"
+                     Foreground="#cdd6f4" />
+          <TextBlock Text="Window Manager &amp; Voice CLI"
+                     FontSize="12"
+                     Foreground="#585b70" />
+        </StackPanel>
+      </StackPanel>
+    </Border>
+
+    <!-- ══════════ PAGES ══════════ -->
+    <Border Grid.Row="1" Padding="24,16" x:CompileBindings="False">
+      <Panel>
+
+      <!-- PAGE: Welcome -->
+      <StackPanel IsVisible="{Binding CurrentPage, Converter={x:Static local:PageConverter.Instance}, ConverterParameter=Welcome}"
+                  VerticalAlignment="Center"
+                  HorizontalAlignment="Center"
+                  Spacing="16"
+                  MaxWidth="440">
+        <TextBlock Text="Welcome to TinyBoss Setup"
+                   FontSize="20" FontWeight="SemiBold"
+                   Foreground="#cdd6f4"
+                   HorizontalAlignment="Center" />
+        <TextBlock TextWrapping="Wrap"
+                   Foreground="#a6adc8"
+                   FontSize="14"
+                   LineHeight="22"
+                   HorizontalAlignment="Center"
+                   TextAlignment="Center"
+                   Text="This wizard will install TinyBoss to your computer with a desktop shortcut and Start Menu entry. It takes about 30 seconds." />
+        <TextBlock TextWrapping="Wrap"
+                   Foreground="#585b70"
+                   FontSize="12"
+                   HorizontalAlignment="Center"
+                   TextAlignment="Center"
+                   Text="TinyBoss is a tray app that provides window tiling (Ctrl+Shift+G) and push-to-talk voice commands (Ctrl+Shift+V)." />
+        <Button Content="Install →"
+                Command="{Binding GoToInstallCommand}"
+                HorizontalAlignment="Center"
+                Padding="32,12"
+                FontSize="15"
+                FontWeight="SemiBold"
+                Background="#89b4fa"
+                Foreground="#1e1e2e"
+                CornerRadius="8"
+                Margin="0,12,0,0" />
+      </StackPanel>
+
+      <!-- PAGE: Installing -->
+      <DockPanel IsVisible="{Binding CurrentPage, Converter={x:Static local:PageConverter.Instance}, ConverterParameter=Installing}">
+        <TextBlock DockPanel.Dock="Top"
+                   Text="Installing"
+                   FontSize="18" FontWeight="SemiBold"
+                   Foreground="#cdd6f4"
+                   Margin="0,0,0,12" />
+
+        <!-- Log area -->
+        <Border DockPanel.Dock="Bottom"
+                Background="#181825"
+                BorderBrush="#313244"
+                BorderThickness="1"
+                CornerRadius="8"
+                Margin="0,10,0,0"
+                Padding="12,8"
+                IsVisible="{Binding LogText, Converter={x:Static StringConverters.IsNotNullOrEmpty}}">
+          <DockPanel>
+            <TextBlock DockPanel.Dock="Top"
+                       Text="Install Log"
+                       FontSize="11" FontWeight="SemiBold"
+                       Foreground="#585b70"
+                       Margin="0,0,0,4" />
+            <ScrollViewer MaxHeight="90">
+              <TextBlock Text="{Binding LogText}"
+                         FontSize="11"
+                         FontFamily="Consolas"
+                         Foreground="#7f849c"
+                         TextWrapping="Wrap" />
+            </ScrollViewer>
+          </DockPanel>
+        </Border>
+
+        <!-- Checklist -->
+        <ScrollViewer>
+          <ItemsControl ItemsSource="{Binding Checks}">
+            <ItemsControl.ItemTemplate>
+              <DataTemplate x:CompileBindings="False">
+                <Border Padding="12,10"
+                        Margin="0,3"
+                        CornerRadius="8"
+                        Background="#181825">
+                  <Grid ColumnDefinitions="*,Auto">
+                    <StackPanel Grid.Column="0"
+                                VerticalAlignment="Center"
+                                Margin="8,0,0,0">
+                      <StackPanel Orientation="Horizontal" Spacing="8">
+                        <TextBlock Text="{Binding Name}"
+                                   FontSize="14" FontWeight="SemiBold"
+                                   Foreground="#cdd6f4" />
+                        <TextBlock Text="{Binding DetectedVersion}"
+                                   FontSize="12"
+                                   Foreground="#585b70"
+                                   VerticalAlignment="Center" />
+                      </StackPanel>
+                      <TextBlock Text="{Binding StatusMessage}"
+                                 FontSize="11"
+                                 Foreground="#a6adc8"
+                                 TextWrapping="Wrap"
+                                 Margin="0,2,0,0" />
+                      <ProgressBar Value="{Binding ProgressPercent}"
+                                   Maximum="100"
+                                   Height="4"
+                                   Margin="0,4,0,0"
+                                   Foreground="#89b4fa"
+                                   Background="#313244"
+                                   CornerRadius="2">
+                        <ProgressBar.IsVisible>
+                          <Binding Path="Status">
+                            <Binding.Converter>
+                              <x:Static Member="local:StatusToBoolConverter.IsInstalling" />
+                            </Binding.Converter>
+                          </Binding>
+                        </ProgressBar.IsVisible>
+                      </ProgressBar>
+                    </StackPanel>
+
+                    <!-- Status icon -->
+                    <TextBlock Grid.Column="1"
+                               FontSize="18"
+                               VerticalAlignment="Center"
+                               Margin="10,0,0,0">
+                      <TextBlock.Text>
+                        <Binding Path="Status">
+                          <Binding.Converter>
+                            <x:Static Member="local:StatusToIconConverter.Instance" />
+                          </Binding.Converter>
+                        </Binding>
+                      </TextBlock.Text>
+                    </TextBlock>
+                  </Grid>
+                </Border>
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
+        </ScrollViewer>
+      </DockPanel>
+
+      <!-- PAGE: Complete -->
+      <StackPanel IsVisible="{Binding CurrentPage, Converter={x:Static local:PageConverter.Instance}, ConverterParameter=Complete}"
+                  VerticalAlignment="Center"
+                  HorizontalAlignment="Center"
+                  Spacing="16"
+                  MaxWidth="440">
+        <TextBlock Text="🎉"
+                   FontSize="48"
+                   HorizontalAlignment="Center" />
+        <TextBlock Text="Setup Complete!"
+                   FontSize="24" FontWeight="Bold"
+                   Foreground="#a6e3a1"
+                   HorizontalAlignment="Center" />
+        <TextBlock TextWrapping="Wrap"
+                   Foreground="#a6adc8"
+                   FontSize="14"
+                   TextAlignment="Center"
+                   Text="TinyBoss is installed. Launch it from the desktop shortcut or click below. It runs in the system tray." />
+        <Button Content="Launch TinyBoss"
+                Command="{Binding LaunchAppCommand}"
+                HorizontalAlignment="Center"
+                Padding="32,14"
+                FontSize="16"
+                FontWeight="SemiBold"
+                Background="#89b4fa"
+                Foreground="#1e1e2e"
+                CornerRadius="8"
+                Margin="0,8,0,0" />
+        <Button Content="Close"
+                Command="{Binding CloseCommand}"
+                HorizontalAlignment="Center"
+                Padding="20,8"
+                FontSize="12"
+                Background="#313244"
+                Foreground="#a6adc8"
+                CornerRadius="6" />
+      </StackPanel>
+      </Panel>
+    </Border>
+
+    <!-- ══════════ FOOTER ══════════ -->
+    <Border Grid.Row="2"
+            Background="#1e1e2e"
+            Padding="24,10"
+            BorderBrush="#313244"
+            BorderThickness="0,1,0,0">
+      <TextBlock Text="{Binding OverallStatus}"
+                 FontSize="12"
+                 Foreground="#7f849c"
+                 VerticalAlignment="Center"
+                 TextTrimming="CharacterEllipsis" />
+    </Border>
+  </Grid>
+</Window>

@@ -1,0 +1,38 @@
+# .NET
+bin/
+obj/
+*.user
+*.suo
+.vs/
+*.userprefs
+*.usertasks
+
+# NuGet
+*.nupkg
+packages/
+*.lock.json
+!packages.lock.json
+
+# Publish output
+publish/
+publish_test/
+
+# Installer output
+Installer/Output/
+Installer/TinyBoss.Installer/app/
+Installer/TinyBoss.Installer/bin/
+Installer/TinyBoss.Installer/obj/
+
+# Secrets / runtime config
+*.env
+.env
+appsettings.Production.json
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# KittenHerder runtime data (lives in %LOCALAPPDATA%, not in repo)
+sessions.json
+allowed_executables.txt

@@ -1,0 +1,12 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="KittenHerder.Platform.Windows.TileOverlay"
+        Title="TinyBoss Tile Overlay"
+        TransparencyLevelHint="Transparent"
+        Background="Transparent"
+        SystemDecorations="None"
+        ShowInTaskbar="False"
+        Topmost="True"
+        CanResize="False">
+    <Canvas x:Name="ZoneCanvas" />
+</Window>

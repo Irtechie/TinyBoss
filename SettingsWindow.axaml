@@ -1,0 +1,44 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="KittenHerder.SettingsWindow"
+        Title="TinyBoss Settings"
+        Width="420" Height="300"
+        CanResize="False"
+        ShowInTaskbar="True"
+        WindowStartupLocation="CenterScreen"
+        Icon="/Assets/TinyBoss.ico">
+  <StackPanel Margin="24" Spacing="16">
+
+    <!-- Grid Size -->
+    <StackPanel Spacing="4">
+      <TextBlock Text="Grid Layout" FontWeight="SemiBold" />
+      <ComboBox x:Name="GridSizeCombo" HorizontalAlignment="Stretch">
+        <ComboBoxItem Tag="2" Content="2 panes (side-by-side)" />
+        <ComboBoxItem Tag="4" Content="4 panes (2×2 grid)" />
+        <ComboBoxItem Tag="6" Content="6 panes (2×3 grid)" />
+      </ComboBox>
+    </StackPanel>
+
+    <!-- Microphone -->
+    <StackPanel Spacing="4">
+      <TextBlock Text="Microphone" FontWeight="SemiBold" />
+      <ComboBox x:Name="MicCombo" HorizontalAlignment="Stretch" />
+    </StackPanel>
+
+    <!-- Voice Hotkey -->
+    <StackPanel Spacing="4">
+      <TextBlock Text="Voice Hotkey" FontWeight="SemiBold" />
+      <StackPanel Orientation="Horizontal" Spacing="8">
+        <TextBlock x:Name="HotkeyDisplay" VerticalAlignment="Center"
+                   Text="Ctrl+Shift+Space" FontFamily="Consolas" />
+      </StackPanel>
+    </StackPanel>
+
+    <!-- Buttons -->
+    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8" Margin="0,8,0,0">
+      <Button x:Name="SaveButton" Content="Save" Width="80" />
+      <Button x:Name="CancelButton" Content="Cancel" Width="80" />
+    </StackPanel>
+
+  </StackPanel>
+</Window>
