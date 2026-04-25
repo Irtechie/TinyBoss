@@ -2,6 +2,7 @@ using Avalonia.Controls;
 using Avalonia.Interactivity;
 using Avalonia.Markup.Xaml;
 using TinyBoss.Core;
+using TinyBoss.Platform.Windows;
 using NAudio.CoreAudioApi;
 
 namespace TinyBoss;
@@ -14,7 +15,9 @@ public partial class SettingsWindow : Window
     private readonly ComboBox _voiceHotkeyCombo;
     private readonly ComboBox _tileHotkeyCombo;
     private readonly ComboBox _micCombo;
+    private readonly StackPanel _monitorList;
     private readonly TextBlock _conflictWarning;
+    private readonly List<(CheckBox Check, string DeviceName)> _monitorChecks = new();
 
     private static readonly HotkeyPreset[] VoicePresets =
     [
@@ -41,6 +44,7 @@ public partial class SettingsWindow : Window
         _voiceHotkeyCombo = this.FindControl<ComboBox>("VoiceHotkeyCombo")!;
         _tileHotkeyCombo = this.FindControl<ComboBox>("TileHotkeyCombo")!;
         _micCombo = this.FindControl<ComboBox>("MicCombo")!;
+        _monitorList = this.FindControl<StackPanel>("MonitorList")!;
         _conflictWarning = this.FindControl<TextBlock>("ConflictWarning")!;
 
         var saveButton = this.FindControl<Button>("SaveButton")!;
@@ -91,6 +95,53 @@ public partial class SettingsWindow : Window
         catch
         {
             // No audio devices — leave just "System Default"
+        }
+
+        // Monitor enumeration
+        LoadMonitors();
+    }
+
+    private void LoadMonitors()
+    {
+        _monitorList.Children.Clear();
+        _monitorChecks.Clear();
+
+        try
+        {
+            var monitors = MonitorEnumerator.GetMonitors();
+            bool allEnabled = _config.EnabledMonitors is null || _config.EnabledMonitors.Count == 0;
+
+            foreach (var mon in monitors)
+            {
+                var primary = mon.IsPrimary ? " ⭐" : "";
+                var label = $"{mon.FriendlyName} — {mon.Width}×{mon.Height}{primary}";
+                var cb = new CheckBox
+                {
+                    Content = label,
+                    IsChecked = allEnabled || _config.EnabledMonitors!.Contains(mon.DeviceName),
+                    Tag = mon.DeviceName,
+                };
+                _monitorChecks.Add((cb, mon.DeviceName));
+                _monitorList.Children.Add(cb);
+            }
+
+            if (monitors.Count == 0)
+            {
+                _monitorList.Children.Add(new TextBlock
+                {
+                    Text = "No monitors detected",
+                    Foreground = Avalonia.Media.Brushes.Gray,
+                    FontStyle = Avalonia.Media.FontStyle.Italic,
+                });
+            }
+        }
+        catch
+        {
+            _monitorList.Children.Add(new TextBlock
+            {
+                Text = "Could not enumerate monitors",
+                Foreground = Avalonia.Media.Brushes.Gray,
+            });
         }
     }
 
@@ -159,6 +210,17 @@ public partial class SettingsWindow : Window
         // Microphone
         if (_micCombo.SelectedItem is ComboBoxItem micItem)
             _config.MicDeviceId = micItem.Tag as string;
+
+        // Monitors — save checked ones (null = all enabled)
+        var enabled = _monitorChecks
+            .Where(mc => mc.Check.IsChecked == true)
+            .Select(mc => mc.DeviceName)
+            .ToList();
+
+        if (enabled.Count == _monitorChecks.Count || enabled.Count == 0)
+            _config.EnabledMonitors = null; // all monitors
+        else
+            _config.EnabledMonitors = enabled;
 
         _config.Save();
         SettingsSaved?.Invoke();

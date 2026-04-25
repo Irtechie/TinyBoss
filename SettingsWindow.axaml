@@ -2,11 +2,12 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         x:Class="TinyBoss.SettingsWindow"
         Title="TinyBoss Settings"
-        Width="420" Height="360"
+        Width="420" Height="480"
         CanResize="False"
         ShowInTaskbar="True"
         WindowStartupLocation="CenterScreen"
         Icon="/Assets/TinyBoss.ico">
+  <ScrollViewer>
   <StackPanel Margin="24" Spacing="16">
 
     <!-- Voice Hotkey -->
@@ -17,7 +18,7 @@
 
     <!-- Tile Hotkey -->
     <StackPanel Spacing="4">
-      <TextBlock Text="Tile Overlay Hotkey" FontWeight="SemiBold" />
+      <TextBlock Text="Tile Overlay Hotkey (show/hide tiling grid)" FontWeight="SemiBold" />
       <ComboBox x:Name="TileHotkeyCombo" HorizontalAlignment="Stretch" />
     </StackPanel>
 
@@ -25,6 +26,12 @@
     <StackPanel Spacing="4">
       <TextBlock Text="Microphone" FontWeight="SemiBold" />
       <ComboBox x:Name="MicCombo" HorizontalAlignment="Stretch" />
+    </StackPanel>
+
+    <!-- Monitors -->
+    <StackPanel Spacing="4">
+      <TextBlock Text="Tiling Monitors (uncheck to exclude)" FontWeight="SemiBold" />
+      <StackPanel x:Name="MonitorList" Spacing="4" />
     </StackPanel>
 
     <!-- Conflict warning -->
@@ -38,4 +45,5 @@
     </StackPanel>
 
   </StackPanel>
+  </ScrollViewer>
 </Window>

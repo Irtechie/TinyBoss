@@ -40,6 +40,13 @@ public sealed class TinyBossConfig
     /// <summary>NAudio device ID. Null = system default.</summary>
     public string? MicDeviceId { get; set; }
 
+    // ── Monitors ─────────────────────────────────────────────────────────────
+    /// <summary>
+    /// Monitor device names where tiling is enabled. Null or empty = all monitors.
+    /// Example: ["\\.\DISPLAY1", "\\.\DISPLAY3"]
+    /// </summary>
+    public List<string>? EnabledMonitors { get; set; }
+
     // ── Whisper ──────────────────────────────────────────────────────────────
     public string ModelDir { get; set; } = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
