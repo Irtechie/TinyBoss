@@ -5,26 +5,30 @@ using Microsoft.Win32;
 namespace TinyBoss.Platform.Windows;
 
 /// <summary>
-/// Controls the Windows 11 Snap Layouts flyout via registry.
+/// Controls Windows 11 Snap Layouts and Snap Bar via registry.
 /// When disabled, TinyBoss intercepts drag-to-top-edge instead.
 /// </summary>
 [SupportedOSPlatform("windows")]
 public static class SnapLayoutControl
 {
     private const string RegistryPath = @"Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced";
-    private const string ValueName = "EnableSnapAssistFlyout";
+
+    // Controls the flyout when hovering the maximize button
+    private const string FlyoutValue = "EnableSnapAssistFlyout";
+    // Controls the snap bar that appears when dragging to the top edge
+    private const string SnapBarValue = "EnableSnapBar";
 
     /// <summary>
-    /// Disables the Windows 11 Snap Layouts flyout that appears
-    /// when dragging a window to the top edge of the screen.
-    /// Takes effect immediately — no restart needed.
+    /// Disables both the Windows 11 Snap Layouts flyout (maximize hover)
+    /// and the Snap Bar (drag-to-top). Takes effect immediately.
     /// </summary>
     public static void DisableSnapLayouts()
     {
         try
         {
             using var key = Registry.CurrentUser.CreateSubKey(RegistryPath);
-            key.SetValue(ValueName, 0, RegistryValueKind.DWord);
+            key.SetValue(FlyoutValue, 0, RegistryValueKind.DWord);
+            key.SetValue(SnapBarValue, 0, RegistryValueKind.DWord);
         }
         catch
         {
@@ -33,14 +37,15 @@ public static class SnapLayoutControl
     }
 
     /// <summary>
-    /// Re-enables the Windows 11 Snap Layouts flyout.
+    /// Re-enables Windows 11 Snap Layouts flyout and Snap Bar.
     /// </summary>
     public static void EnableSnapLayouts()
     {
         try
         {
             using var key = Registry.CurrentUser.CreateSubKey(RegistryPath);
-            key.SetValue(ValueName, 1, RegistryValueKind.DWord);
+            key.SetValue(FlyoutValue, 1, RegistryValueKind.DWord);
+            key.SetValue(SnapBarValue, 1, RegistryValueKind.DWord);
         }
         catch
         {

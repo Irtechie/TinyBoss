@@ -39,6 +39,13 @@ public static class MonitorEnumerator
         return monitors;
     }
 
+    /// <summary>Get the device name (e.g. \\.\DISPLAY1) for a given HMONITOR handle.</summary>
+    public static string? GetDeviceName(nint hMonitor)
+    {
+        var info = new MONITORINFOEX { cbSize = (uint)Marshal.SizeOf<MONITORINFOEX>() };
+        return GetMonitorInfo(hMonitor, ref info) ? info.szDevice : null;
+    }
+
     // ── P/Invoke ─────────────────────────────────────────────────────────────
 
     private const uint MONITORINFOF_PRIMARY = 1;

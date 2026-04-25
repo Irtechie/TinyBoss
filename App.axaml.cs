@@ -212,6 +212,16 @@ public class App : Application
 
     // ── Tiling orchestration ─────────────────────────────────────────────────
 
+    /// <summary>Check if a monitor handle is enabled for tiling in config.</summary>
+    private bool IsMonitorEnabled(nint hMonitor)
+    {
+        if (_config?.EnabledMonitors is null || _config.EnabledMonitors.Count == 0)
+            return true; // null/empty = all monitors enabled
+
+        var deviceName = MonitorEnumerator.GetDeviceName(hMonitor);
+        return deviceName is not null && _config.EnabledMonitors.Contains(deviceName);
+    }
+
     private void OnTileKeyPressed()
     {
         Dispatcher.UIThread.Post(() =>
@@ -222,6 +232,9 @@ public class App : Application
                 return;
             }
 
+            var monitor = TilingCoordinator.GetMonitorAtCursor();
+            if (!IsMonitorEnabled(monitor)) return;
+
             ShowOverlay();
         });
     }
@@ -230,6 +243,7 @@ public class App : Application
     {
         if (_tiling is null) return;
         var monitor = TilingCoordinator.GetMonitorAtCursor();
+        if (!IsMonitorEnabled(monitor)) return;
         _tiling.Rebalance(monitor);
     }
 
@@ -239,6 +253,10 @@ public class App : Application
     private void ShowOverlay()
     {
         _currentMonitor = TilingCoordinator.GetMonitorAtCursor();
+
+        // Don't show overlay on disabled monitors
+        if (!IsMonitorEnabled(_currentMonitor)) return;
+
         var info = new MONITORINFO { cbSize = (uint)System.Runtime.InteropServices.Marshal.SizeOf<MONITORINFO>() };
         TilingCoordinator.GetMonitorInfo(_currentMonitor, ref info);
 
@@ -289,7 +307,7 @@ public class App : Application
         if (_config?.OverrideSnapLayouts == true && (_overlay is null || !_overlay.IsVisible))
         {
             var monitor = TilingCoordinator.GetMonitorAtPoint(screenX, screenY);
-            if (monitor != nint.Zero)
+            if (monitor != nint.Zero && IsMonitorEnabled(monitor))
             {
                 var info = new MONITORINFO { cbSize = (uint)System.Runtime.InteropServices.Marshal.SizeOf<MONITORINFO>() };
                 TilingCoordinator.GetMonitorInfo(monitor, ref info);
