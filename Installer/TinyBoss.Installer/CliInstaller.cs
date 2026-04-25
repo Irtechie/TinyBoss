@@ -20,7 +20,7 @@ public record CliDefinition(
     bool IsAvailable,
     string Description = "");
 
-public enum CliInstallKind { Npm, Stub }
+public enum CliInstallKind { Npm, Pip, Stub }
 
 /// <summary>
 /// Detects and installs Node.js + npm-based CLI tools.
@@ -42,6 +42,25 @@ public static class CliInstaller
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "nodejs"),
     ];
 
+    // Known Python install locations
+    private static readonly string[] PythonSearchPaths =
+    [
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs", "Python"),
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Python"),
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Python311"),
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Python312"),
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Python313"),
+    ];
+
+    // Canonical pip/pipx user bin — where pip install --user / pipx places scripts
+    private static string PipUserBin =>
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "Programs", "Python", "Scripts");
+
+    private static string PipxBin =>
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "pipx", "venvs");
+
     // ── CLI Definitions ──────────────────────────────────────────────────
 
     public static IReadOnlyList<CliDefinition> AllClis { get; } =
@@ -58,9 +77,9 @@ public static class CliInstaller
             "", IsAvailable: false,
             "Coming soon — install method TBD"),
 
-        new("inferno", "Inferno", "inferno", "--version", CliInstallKind.Stub,
-            "", IsAvailable: false,
-            "Coming soon — npm package in development"),
+        new("inferno", "Inferno", "inferno", "--version", CliInstallKind.Pip,
+            "inferno-local", IsAvailable: true,
+            "Local LLM runtime — connects to any OpenAI-compatible endpoint"),
 
         new("qwen", "Qwen CLI", "qwen", "--version", CliInstallKind.Stub,
             "", IsAvailable: false,
@@ -178,6 +197,58 @@ public static class CliInstaller
         return result;
     }
 
+    // ── Python Detection ─────────────────────────────────────────────────
+
+    public static async Task<CheckResult> DetectPython(CancellationToken ct)
+    {
+        var pythonPath = ResolvePython();
+        if (pythonPath is null)
+            return new(false, "", "Python not found");
+
+        var ver = await RunCapture(pythonPath, "--version", ct);
+        if (string.IsNullOrWhiteSpace(ver))
+            return new(false, "", "Python found but version check failed");
+
+        var clean = ver.Trim().Replace("Python ", "");
+        if (int.TryParse(clean.Split('.')[1], out var minor) && minor < 11)
+            return new(false, clean, $"Python {clean} is too old (need ≥ 3.11)");
+
+        var pipPath = ResolvePip();
+        return new(true, $"Python {clean}" + (pipPath is not null ? ", pip ✓" : ", pip missing"));
+    }
+
+    // ── Python Installation ──────────────────────────────────────────────
+
+    public static async Task<CheckResult> InstallPython(
+        Action<int, string> progress, CancellationToken ct)
+    {
+        progress(5, "Checking for winget…");
+
+        var winget = ResolveCommand("winget");
+        if (winget is not null)
+        {
+            progress(15, "Installing Python 3.12 via winget…");
+            var (exitCode, output) = await RunWithOutput(winget,
+                "install --id Python.Python.3.12 --accept-package-agreements --accept-source-agreements",
+                ct);
+
+            if (exitCode == 0)
+            {
+                progress(85, "Verifying Python…");
+                await Task.Delay(2000, ct);
+                var detect = await DetectPython(ct);
+                progress(100, detect.Success ? $"Python installed ✅ ({detect.Version})" : "Installed but not detected");
+                return detect;
+            }
+
+            progress(20, "winget install failed, trying python.org…");
+        }
+
+        // Fallback: point user to python.org
+        progress(100, "Please install Python 3.11+ from python.org");
+        return new(false, "", "Auto-install failed — install Python 3.11+ from python.org");
+    }
+
     // ── CLI Detection ────────────────────────────────────────────────────
 
     public static async Task<CheckResult> DetectCli(CliDefinition cli, CancellationToken ct)
@@ -185,8 +256,10 @@ public static class CliInstaller
         if (!cli.IsAvailable)
             return new(false, "", cli.Description);
 
-        // Check npm global bin first (most reliable after fresh install)
-        var cmdPath = ResolveCli(cli.DetectCommand);
+        // Check appropriate bin paths based on install kind
+        var cmdPath = cli.InstallKind == CliInstallKind.Pip
+            ? ResolvePipCli(cli.DetectCommand)
+            : ResolveCli(cli.DetectCommand);
         if (cmdPath is null)
             return new(false, "", "Not installed");
 
@@ -203,6 +276,9 @@ public static class CliInstaller
     {
         if (!cli.IsAvailable || cli.InstallKind == CliInstallKind.Stub)
             return new(false, "", $"{cli.DisplayName} is not yet available for install");
+
+        if (cli.InstallKind == CliInstallKind.Pip)
+            return await InstallPipCli(cli, progress, ct);
 
         progress(10, $"Locating npm…");
         var npm = ResolveNpm();
@@ -221,6 +297,51 @@ public static class CliInstaller
         progress(100, detect.Success
             ? $"{cli.DisplayName} installed ✅ ({detect.Version})"
             : $"Installed but detection failed");
+        return detect;
+    }
+
+    // ── Pip CLI Installation ─────────────────────────────────────────────
+
+    private static async Task<CheckResult> InstallPipCli(
+        CliDefinition cli, Action<int, string> progress, CancellationToken ct)
+    {
+        progress(10, "Locating pip…");
+        var pip = ResolvePip();
+        if (pip is null)
+        {
+            // Try pipx as fallback
+            var pipx = ResolveCommand("pipx");
+            if (pipx is not null)
+            {
+                progress(30, $"Installing {cli.InstallTarget} via pipx…");
+                var (pipxExit, pipxOut) = await RunWithOutput(pipx,
+                    $"install {cli.InstallTarget}", ct);
+                if (pipxExit == 0)
+                {
+                    progress(80, "Verifying…");
+                    var pipxDetect = await DetectCli(cli, ct);
+                    progress(100, pipxDetect.Success
+                        ? $"{cli.DisplayName} installed ✅ ({pipxDetect.Version})"
+                        : "Installed but detection failed");
+                    return pipxDetect;
+                }
+                return new(false, "", $"pipx install failed (exit {pipxExit}): {pipxOut}");
+            }
+            return new(false, "", "pip/pipx not found — Python 3.11+ must be installed first");
+        }
+
+        progress(30, $"Installing {cli.InstallTarget} via pip…");
+        var (exit, output) = await RunWithOutput(pip,
+            $"install {cli.InstallTarget}", ct);
+
+        if (exit != 0)
+            return new(false, "", $"pip install failed (exit {exit}): {output}");
+
+        progress(80, "Verifying…");
+        var detect = await DetectCli(cli, ct);
+        progress(100, detect.Success
+            ? $"{cli.DisplayName} installed ✅ ({detect.Version})"
+            : "Installed but detection failed");
         return detect;
     }
 
@@ -261,6 +382,70 @@ public static class CliInstaller
 
         var exeFile = Path.Combine(NpmGlobalBin, command + ".exe");
         if (File.Exists(exeFile)) return exeFile;
+
+        // Fall back to PATH
+        return ResolveCommand(command);
+    }
+
+    private static string? ResolvePython()
+    {
+        // Check known install directories (recurse into version subdirs)
+        foreach (var basePath in PythonSearchPaths)
+        {
+            if (Directory.Exists(basePath))
+            {
+                // Direct check (e.g., C:\Program Files\Python312\python.exe)
+                var direct = Path.Combine(basePath, "python.exe");
+                if (File.Exists(direct)) return direct;
+
+                // Check version subdirectories (e.g., Python312, Python311)
+                try
+                {
+                    foreach (var sub in Directory.GetDirectories(basePath, "Python3*"))
+                    {
+                        var exe = Path.Combine(sub, "python.exe");
+                        if (File.Exists(exe)) return exe;
+                    }
+                }
+                catch { /* access denied or similar */ }
+            }
+        }
+        // Fall back to PATH
+        return ResolveCommand("python") ?? ResolveCommand("python3");
+    }
+
+    private static string? ResolvePip()
+    {
+        // pip typically lives alongside python in Scripts/
+        var python = ResolvePython();
+        if (python is not null)
+        {
+            var scriptsDir = Path.Combine(Path.GetDirectoryName(python)!, "Scripts");
+            var pip = Path.Combine(scriptsDir, "pip.exe");
+            if (File.Exists(pip)) return pip;
+            var pip3 = Path.Combine(scriptsDir, "pip3.exe");
+            if (File.Exists(pip3)) return pip3;
+        }
+        return ResolveCommand("pip") ?? ResolveCommand("pip3");
+    }
+
+    private static string? ResolvePipCli(string command)
+    {
+        // Check Python Scripts dirs
+        var python = ResolvePython();
+        if (python is not null)
+        {
+            var scriptsDir = Path.Combine(Path.GetDirectoryName(python)!, "Scripts");
+            var exe = Path.Combine(scriptsDir, command + ".exe");
+            if (File.Exists(exe)) return exe;
+        }
+
+        // Check pipx venvs
+        if (Directory.Exists(PipxBin))
+        {
+            var venvBin = Path.Combine(PipxBin, command, "Scripts", command + ".exe");
+            if (File.Exists(venvBin)) return venvBin;
+        }
 
         // Fall back to PATH
         return ResolveCommand(command);
