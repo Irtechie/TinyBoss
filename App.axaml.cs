@@ -315,19 +315,10 @@ public class App : Application
         // Prune dead windows so grid size reflects reality
         _tiling?.PruneDeadWindows();
 
-        // If this window is already tiled, un-tile it and reflow immediately.
-        // Overlay still shows so user can drop it on a different slot.
-        if (_tiling is not null)
-        {
-            var existingSlot = _tiling.FindSlotForHwnd(hwnd);
-            if (existingSlot >= 0)
-            {
-                var tilingMonitor = _tiling.ActiveMonitor;
-                _tiling.RemoveWindow(hwnd);
-                if (tilingMonitor != nint.Zero && _tiling.OccupiedCount > 0)
-                    _tiling.Rebalance(tilingMonitor);
-            }
-        }
+        // If this window is already tiled, remove from slot data only.
+        // Do NOT rebalance here — SetWindowPos during drag kills the move operation.
+        // Reflow happens at drag end.
+        _tiling?.RemoveWindow(hwnd);
 
         var monitor = TilingCoordinator.GetMonitorAtCursor();
         if (!IsMonitorEnabled(monitor)) return;
@@ -391,17 +382,12 @@ public class App : Application
 
         if (!wasActive || _overlay is null || _currentPaneBounds is null)
         {
-            // Overlay wasn't shown, but if this window was tiled, un-tile and reflow
-            if (_tiling is not null)
+            // Overlay wasn't shown — rebalance remaining (window removed at drag start)
+            if (_tiling is not null && _tiling.OccupiedCount > 0)
             {
-                var prevSlot = _tiling.FindSlotForHwnd(hwnd);
-                if (prevSlot >= 0)
-                {
-                    var tilingMonitor = _tiling.ActiveMonitor;
-                    _tiling.RemoveWindow(hwnd);
-                    if (tilingMonitor != nint.Zero)
-                        _tiling.Rebalance(tilingMonitor);
-                }
+                var tilingMonitor = _tiling.ActiveMonitor;
+                if (tilingMonitor != nint.Zero)
+                    _tiling.Rebalance(tilingMonitor);
             }
             Dispatcher.UIThread.Post(DismissOverlay);
             return;
@@ -417,13 +403,9 @@ public class App : Application
 
             if (droppedOnDifferentMonitor)
             {
-                // Dragged a tiled window to a different monitor — un-tile it, reflow rest on original
-                var prevSlot = _tiling.FindSlotForHwnd(hwnd);
-                if (prevSlot >= 0)
-                {
-                    _tiling.RemoveWindow(hwnd);
+                // Dragged to a different monitor — rebalance rest on original (already removed at drag start)
+                if (_tiling.OccupiedCount > 0)
                     _tiling.Rebalance(originalMonitor);
-                }
                 Dispatcher.UIThread.Post(DismissOverlay);
                 return;
             }
@@ -467,17 +449,13 @@ public class App : Application
         }
         else
         {
-            // Window dropped outside any tile zone — if it was tiled, un-tile it and reflow
-            if (_tiling is not null)
+            // Window dropped outside any tile zone — rebalance remaining windows
+            // (window was already removed from slot at drag start)
+            if (_tiling is not null && _tiling.OccupiedCount > 0)
             {
-                var prevSlot = _tiling.FindSlotForHwnd(hwnd);
-                if (prevSlot >= 0)
-                {
-                    var tilingMonitor = _tiling.ActiveMonitor;
-                    _tiling.RemoveWindow(hwnd);
-                    if (tilingMonitor != nint.Zero)
-                        _tiling.Rebalance(tilingMonitor);
-                }
+                var tilingMonitor = _tiling.ActiveMonitor;
+                if (tilingMonitor != nint.Zero)
+                    _tiling.Rebalance(tilingMonitor);
             }
             Dispatcher.UIThread.Post(DismissOverlay);
         }
