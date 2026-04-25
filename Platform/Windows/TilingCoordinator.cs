@@ -27,11 +27,9 @@ public sealed class TilingCoordinator : IDisposable
     private nint _activeMonitor;
     private bool _disposed;
     private Timer? _reflowDebounce;
-    private Timer? _aliasEnforcer;
     private bool _dragInProgress;
     private bool _reflowPending;
     private const int REFLOW_DEBOUNCE_MS = 100;
-    private const int ALIAS_ENFORCE_MS = 500;
 
     /// <summary>Fires after any slot mutation. Subscribers must marshal to UI thread.</summary>
     public event Action? SlotsChanged;
@@ -223,7 +221,7 @@ public sealed class TilingCoordinator : IDisposable
     }
 
     /// <summary>
-    /// Rename a tiled window — sets internal alias and enforces it periodically.
+    /// Rename a tiled window — sets internal alias and hooks title change events.
     /// </summary>
     public bool RenameSlot(int slot, string alias)
     {
@@ -232,39 +230,66 @@ public sealed class TilingCoordinator : IDisposable
             if (!_slots.TryGetValue(slot, out var ts)) return false;
             if (!IsWindow(ts.Hwnd)) { RemoveSlotLocked(slot); return false; }
             _slots[slot] = ts with { Alias = alias };
+            _enforcingAlias = true; // prevent re-entrant hook fire
             SetWindowText(ts.Hwnd, alias);
-            StartAliasEnforcerIfNeeded();
+            _enforcingAlias = false;
+            InstallNameChangeHook();
         }
         SlotsChanged?.Invoke();
         return true;
     }
 
-    /// <summary>Starts a periodic timer that re-applies aliases when terminals overwrite them.</summary>
-    private void StartAliasEnforcerIfNeeded()
+    // ── Event-driven alias enforcement ───────────────────────────────────────
+
+    private nint _nameChangeHook;
+    private WinEventDelegate? _nameChangeDelegate;
+    private bool _enforcingAlias;
+
+    private delegate void WinEventDelegate(nint hWinEventHook, uint eventType, nint hwnd,
+        int idObject, int idChild, uint idEventThread, uint dwmsEventTime);
+
+    private void InstallNameChangeHook()
     {
-        if (_aliasEnforcer is not null) return;
-        _aliasEnforcer = new Timer(_ => EnforceAliases(), null, ALIAS_ENFORCE_MS, ALIAS_ENFORCE_MS);
+        if (_nameChangeHook != nint.Zero) return;
+        _nameChangeDelegate = OnNameChanged;
+        _nameChangeHook = SetWinEventHook(
+            0x800C, 0x800C, // EVENT_OBJECT_NAMECHANGE
+            nint.Zero, _nameChangeDelegate, 0, 0,
+            0x0002 | 0x0001); // WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS
     }
 
-    private void EnforceAliases()
+    private void UninstallNameChangeHook()
     {
+        if (_nameChangeHook != nint.Zero)
+        {
+            UnhookWinEvent(_nameChangeHook);
+            _nameChangeHook = nint.Zero;
+            _nameChangeDelegate = null;
+        }
+    }
+
+    private void OnNameChanged(nint hWinEventHook, uint eventType, nint hwnd,
+        int idObject, int idChild, uint idEventThread, uint dwmsEventTime)
+    {
+        if (_enforcingAlias || idObject != 0) return; // OBJID_WINDOW = 0
+
         lock (_lock)
         {
             bool hasAliases = false;
             foreach (var kv in _slots)
             {
-                if (kv.Value.Alias is not { } alias) continue;
+                if (kv.Value.Alias is null) continue;
                 hasAliases = true;
-                if (!IsWindow(kv.Value.Hwnd)) continue;
-                var current = GetWindowTitle(kv.Value.Hwnd);
-                if (current != alias)
-                    SetWindowText(kv.Value.Hwnd, alias);
+                if (kv.Value.Hwnd == hwnd)
+                {
+                    _enforcingAlias = true;
+                    SetWindowText(hwnd, kv.Value.Alias);
+                    _enforcingAlias = false;
+                    return;
+                }
             }
             if (!hasAliases)
-            {
-                _aliasEnforcer?.Dispose();
-                _aliasEnforcer = null;
-            }
+                UninstallNameChangeHook();
         }
     }
 
@@ -555,7 +580,7 @@ public sealed class TilingCoordinator : IDisposable
         if (_disposed) return;
         _disposed = true;
 
-        _aliasEnforcer?.Dispose();
+        UninstallNameChangeHook();
         _reflowDebounce?.Dispose();
 
         lock (_lock)
@@ -622,6 +647,13 @@ public sealed class TilingCoordinator : IDisposable
     public static extern int GetWindowText(nint hWnd, StringBuilder lpString, int nMaxCount);
     [DllImport("user32.dll")]
     public static extern int GetWindowTextLength(nint hWnd);
+
+    [DllImport("user32.dll")]
+    private static extern nint SetWinEventHook(uint eventMin, uint eventMax, nint hmodWinEventProc,
+        WinEventDelegate lpfnWinEventProc, uint idProcess, uint idThread, uint dwFlags);
+
+    [DllImport("user32.dll")]
+    private static extern bool UnhookWinEvent(nint hWinEventHook);
 
     /// <summary>Get the title text of a window. Returns empty string on failure.</summary>
     public static string GetWindowTitle(nint hwnd)
