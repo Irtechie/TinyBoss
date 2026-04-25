@@ -396,6 +396,24 @@ public class App : Application
         var slot = TilingCoordinator.HitTestSlot(screenX, screenY, _currentPaneBounds);
         if (slot >= 0 && _tiling is not null)
         {
+            var originalMonitor = _tiling.ActiveMonitor;
+            var droppedOnDifferentMonitor = originalMonitor != nint.Zero
+                && _currentMonitor != originalMonitor
+                && _tiling.OccupiedCount > 0;
+
+            if (droppedOnDifferentMonitor)
+            {
+                // Dragged a tiled window to a different monitor — un-tile it, reflow rest on original
+                var prevSlot = _tiling.FindSlotForHwnd(hwnd);
+                if (prevSlot >= 0)
+                {
+                    _tiling.RemoveWindow(hwnd);
+                    _tiling.Rebalance(originalMonitor);
+                }
+                Dispatcher.UIThread.Post(DismissOverlay);
+                return;
+            }
+
             if (_tiling.IsSlotOccupied(slot))
             {
                 var empty = _tiling.FindNextEmptySlot();
