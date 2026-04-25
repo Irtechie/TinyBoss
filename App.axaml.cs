@@ -66,9 +66,9 @@ public class App : Application
             // DragWatcher needs a message pump thread — install on UI thread
             _dragWatcher.Install();
 
-            // Override Windows Snap Layouts if configured
+            // Override Windows Snap Layouts if configured (restart Explorer once to apply)
             if (_config.OverrideSnapLayouts)
-                SnapLayoutControl.DisableSnapLayouts();
+                SnapLayoutControl.DisableSnapLayouts(restartExplorer: false);
 
             // First-run: show settings for mic selection
             CheckFirstRun();
@@ -276,11 +276,13 @@ public class App : Application
         _overlay.DismissRequested += () => Dispatcher.UIThread.Post(DismissOverlay);
         _overlay.RenameRequested += slot =>
         {
-            var snapshot = _tiling?.GetSnapshot();
-            var currentAlias = snapshot?.TryGetValue(slot, out var ts) == true ? ts.Alias ?? "" : "";
+            var snap = _tiling?.GetSnapshot();
+            var currentAlias = snap?.TryGetValue(slot, out var ts) == true ? ts.Alias ?? "" : "";
             ShowRenameDialog(slot, currentAlias);
         };
         _overlay.Show();
+        // Hotkey-triggered: make interactive (accept clicks for rename/dismiss)
+        _overlay.MakeInteractive();
         _hotkeys?.SetOverlayActive(true);
     }
 
@@ -294,43 +296,144 @@ public class App : Application
 
     // ── Drag events → overlay highlighting + snap ────────────────────────────
 
-    private const int TopEdgeThreshold = 10; // pixels from monitor top
+    private const int TopEdgeThreshold = 30; // pixels from monitor top to trigger dock strip
+    private const int DockStripExpandThreshold = 80; // cursor deeper → expand to full overlay
+    private nint _dragHwnd; // the window being dragged
+    private bool _dragOverlayShown;
 
     private void OnDragStarted(nint hwnd)
     {
-        // If overlay is already showing, just track. Otherwise, no auto-show.
+        _dragHwnd = hwnd;
+        _dragOverlayShown = false;
+
+        // Pre-create overlay on UI thread so it's ready before cursor hits top edge
+        if (_config?.OverrideSnapLayouts == true)
+        {
+            Dispatcher.UIThread.Post(() => PrepareDragOverlay());
+        }
+    }
+
+    /// <summary>
+    /// Pre-creates the overlay in dock strip mode (hidden) so it's ready when cursor hits top edge.
+    /// This eliminates the race between ShowOverlay and DragEnded.
+    /// </summary>
+    private void PrepareDragOverlay()
+    {
+        if (_overlay is not null) return; // already showing from hotkey
+
+        // Determine which monitor has the cursor right now
+        var monitor = TilingCoordinator.GetMonitorAtCursor();
+        if (!IsMonitorEnabled(monitor)) return;
+
+        _currentMonitor = monitor;
+        var info = new MONITORINFO { cbSize = (uint)System.Runtime.InteropServices.Marshal.SizeOf<MONITORINFO>() };
+        TilingCoordinator.GetMonitorInfo(monitor, ref info);
+
+        var gridSize = _tiling?.GridSize ?? 1;
+        _currentPaneBounds = TilingCoordinator.GetPaneBounds(monitor, gridSize);
+
+        _overlay = new TileOverlay();
+        _overlay.SetMonitorBounds(info.rcWork, info.rcMonitor);
+        _overlay.SetGridSize(gridSize);
+
+        // Mark occupied slots
+        var snapshot = _tiling?.GetSnapshot() ?? new Dictionary<int, TileSlot>();
+        var aliases = snapshot.Where(kv => kv.Value.Alias is not null)
+            .ToDictionary(kv => kv.Key, kv => kv.Value.Alias!);
+        _overlay.SetOccupiedSlots(new HashSet<int>(snapshot.Keys), aliases);
+
+        _overlay.DismissRequested += () => Dispatcher.UIThread.Post(DismissOverlay);
+        _overlay.ShowAsDockStrip();
+        // Don't actually show the window yet — we'll show it when cursor approaches top
     }
 
     private void OnDragMoved(int screenX, int screenY)
     {
-        // Top-edge detection: auto-show overlay when dragging to top of monitor
-        if (_config?.OverrideSnapLayouts == true && (_overlay is null || !_overlay.IsVisible))
+        if (_config?.OverrideSnapLayouts != true) return;
+
+        var monitor = TilingCoordinator.GetMonitorAtPoint(screenX, screenY);
+        if (monitor == nint.Zero || !IsMonitorEnabled(monitor)) return;
+
+        var info = new MONITORINFO { cbSize = (uint)System.Runtime.InteropServices.Marshal.SizeOf<MONITORINFO>() };
+        TilingCoordinator.GetMonitorInfo(monitor, ref info);
+        var distFromTop = screenY - info.rcMonitor.Top;
+
+        // If we moved to a different monitor, recreate the overlay
+        if (monitor != _currentMonitor && _overlay is not null)
         {
-            var monitor = TilingCoordinator.GetMonitorAtPoint(screenX, screenY);
-            if (monitor != nint.Zero && IsMonitorEnabled(monitor))
+            Dispatcher.UIThread.Post(() =>
             {
-                var info = new MONITORINFO { cbSize = (uint)System.Runtime.InteropServices.Marshal.SizeOf<MONITORINFO>() };
-                TilingCoordinator.GetMonitorInfo(monitor, ref info);
-                if (screenY <= info.rcMonitor.Top + TopEdgeThreshold)
+                DismissOverlay();
+                _currentMonitor = monitor;
+                PrepareDragOverlay();
+            });
+            return;
+        }
+
+        if (distFromTop <= TopEdgeThreshold)
+        {
+            // Near top edge — show dock strip
+            if (!_dragOverlayShown)
+            {
+                _dragOverlayShown = true;
+                Dispatcher.UIThread.Post(() =>
                 {
-                    Dispatcher.UIThread.Post(ShowOverlay);
-                }
+                    if (_overlay is null) PrepareDragOverlay();
+                    _overlay?.Show();
+                    _overlay?.ShowAsDockStrip();
+                });
+            }
+        }
+        else if (distFromTop <= DockStripExpandThreshold && _dragOverlayShown)
+        {
+            // Slightly deeper — expand to full overlay grid
+            Dispatcher.UIThread.Post(() =>
+            {
+                if (_overlay?.IsDockStripMode == true)
+                    _overlay.ExpandToFullOverlay();
+            });
+
+            // Hit test for zone highlighting
+            if (_currentPaneBounds is not null)
+            {
+                var slot = TilingCoordinator.HitTestSlot(screenX, screenY, _currentPaneBounds);
+                Dispatcher.UIThread.Post(() => _overlay?.HighlightZone(slot));
+            }
+        }
+        else if (_dragOverlayShown)
+        {
+            // Full overlay is showing — continue hit testing
+            if (_overlay?.IsDockStripMode == false && _currentPaneBounds is not null)
+            {
+                var slot = TilingCoordinator.HitTestSlot(screenX, screenY, _currentPaneBounds);
+                Dispatcher.UIThread.Post(() => _overlay?.HighlightZone(slot));
             }
         }
 
-        if (_overlay is null || !_overlay.IsVisible || _currentPaneBounds is null) return;
-
-        var slot = TilingCoordinator.HitTestSlot(screenX, screenY, _currentPaneBounds);
-        Dispatcher.UIThread.Post(() => _overlay?.HighlightZone(slot));
+        // If cursor leaves the overlay area entirely (moved away from top), dismiss
+        if (distFromTop > info.rcMonitor.Height / 2 && _dragOverlayShown && _overlay?.IsDockStripMode == false)
+        {
+            Dispatcher.UIThread.Post(DismissOverlay);
+            _dragOverlayShown = false;
+        }
     }
 
     private void OnDragEnded(nint hwnd, int screenX, int screenY)
     {
-        if (_overlay is null || !_overlay.IsVisible || _currentPaneBounds is null) return;
+        var overlayVisible = _dragOverlayShown && _overlay is not null;
+
+        // Always clean up drag state
+        _dragHwnd = nint.Zero;
+        _dragOverlayShown = false;
+
+        if (!overlayVisible || _currentPaneBounds is null) return;
 
         // Terminal-only filter
         if (!TerminalDetector.IsTerminalWindow(hwnd))
+        {
+            Dispatcher.UIThread.Post(DismissOverlay);
             return;
+        }
 
         var slot = TilingCoordinator.HitTestSlot(screenX, screenY, _currentPaneBounds);
         if (slot >= 0 && _tiling is not null)
@@ -339,7 +442,11 @@ public class App : Application
             if (_tiling.IsSlotOccupied(slot))
             {
                 var empty = _tiling.FindNextEmptySlot();
-                if (empty < 0) return; // at capacity
+                if (empty < 0)
+                {
+                    Dispatcher.UIThread.Post(DismissOverlay);
+                    return; // at capacity
+                }
                 slot = empty;
             }
 
@@ -353,9 +460,9 @@ public class App : Application
             }
 
             _tiling.AssignToSlot(slot, hwnd, sessionId);
-            _tiling.PositionAll(_currentMonitor); // reposition all with new grid size
+            _tiling.PositionAll(_currentMonitor);
 
-            // Update overlay
+            // Update overlay briefly to show result, then dismiss
             Dispatcher.UIThread.Post(() =>
             {
                 var snapshot = _tiling.GetSnapshot();
@@ -365,14 +472,15 @@ public class App : Application
                     .ToDictionary(kv => kv.Key, kv => kv.Value.Alias!);
                 _overlay?.SetOccupiedSlots(new HashSet<int>(snapshot.Keys), aliases);
                 _overlay?.HighlightZone(-1);
-
-                // Refresh pane bounds with new grid size
                 _currentPaneBounds = TilingCoordinator.GetPaneBounds(_currentMonitor, gridSize);
 
-                // Auto-dismiss if all slots filled (6 max)
-                if (snapshot.Count >= 6)
-                    DismissOverlay();
+                // Auto-dismiss after snap
+                Task.Delay(300).ContinueWith(_ => Dispatcher.UIThread.Post(DismissOverlay));
             });
+        }
+        else
+        {
+            Dispatcher.UIThread.Post(DismissOverlay);
         }
     }
 
