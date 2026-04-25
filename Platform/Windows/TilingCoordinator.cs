@@ -390,6 +390,12 @@ public sealed class TilingCoordinator : IDisposable
         return MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
     }
 
+    /// <summary>Get the monitor handle for a specific screen point.</summary>
+    public static nint GetMonitorAtPoint(int screenX, int screenY)
+    {
+        return MonitorFromPoint(new POINT { X = screenX, Y = screenY }, MONITOR_DEFAULTTONEAREST);
+    }
+
     // ── Internal helpers ─────────────────────────────────────────────────────
 
     private bool RemoveHwndLocked(nint hwnd)

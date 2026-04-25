@@ -34,6 +34,12 @@
       <StackPanel x:Name="MonitorList" Spacing="4" />
     </StackPanel>
 
+    <!-- Snap Layout Override -->
+    <StackPanel Spacing="4">
+      <CheckBox x:Name="OverrideSnapCheck" Content="Replace Windows Snap Layouts with TinyBoss"
+                ToolTip.Tip="Disables the Windows 11 snap flyout. Drag a window to the top edge to show TinyBoss overlay instead." />
+    </StackPanel>
+
     <!-- Conflict warning -->
     <TextBlock x:Name="ConflictWarning" Foreground="OrangeRed" FontSize="12"
                TextWrapping="Wrap" IsVisible="False" />

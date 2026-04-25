@@ -66,6 +66,10 @@ public class App : Application
             // DragWatcher needs a message pump thread — install on UI thread
             _dragWatcher.Install();
 
+            // Override Windows Snap Layouts if configured
+            if (_config.OverrideSnapLayouts)
+                SnapLayoutControl.DisableSnapLayouts();
+
             // First-run: show settings for mic selection
             CheckFirstRun();
         }
@@ -272,6 +276,8 @@ public class App : Application
 
     // ── Drag events → overlay highlighting + snap ────────────────────────────
 
+    private const int TopEdgeThreshold = 10; // pixels from monitor top
+
     private void OnDragStarted(nint hwnd)
     {
         // If overlay is already showing, just track. Otherwise, no auto-show.
@@ -279,6 +285,21 @@ public class App : Application
 
     private void OnDragMoved(int screenX, int screenY)
     {
+        // Top-edge detection: auto-show overlay when dragging to top of monitor
+        if (_config?.OverrideSnapLayouts == true && (_overlay is null || !_overlay.IsVisible))
+        {
+            var monitor = TilingCoordinator.GetMonitorAtPoint(screenX, screenY);
+            if (monitor != nint.Zero)
+            {
+                var info = new MONITORINFO { cbSize = (uint)System.Runtime.InteropServices.Marshal.SizeOf<MONITORINFO>() };
+                TilingCoordinator.GetMonitorInfo(monitor, ref info);
+                if (screenY <= info.rcMonitor.Top + TopEdgeThreshold)
+                {
+                    Dispatcher.UIThread.Post(ShowOverlay);
+                }
+            }
+        }
+
         if (_overlay is null || !_overlay.IsVisible || _currentPaneBounds is null) return;
 
         var slot = TilingCoordinator.HitTestSlot(screenX, screenY, _currentPaneBounds);

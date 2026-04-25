@@ -47,6 +47,13 @@ public sealed class TinyBossConfig
     /// </summary>
     public List<string>? EnabledMonitors { get; set; }
 
+    // ── Snap Layout Override ─────────────────────────────────────────────────
+    /// <summary>
+    /// When true, disables Windows 11 Snap Layouts flyout and replaces
+    /// drag-to-top-edge with TinyBoss's own tiling overlay.
+    /// </summary>
+    public bool OverrideSnapLayouts { get; set; } = true;
+
     // ── Whisper ──────────────────────────────────────────────────────────────
     public string ModelDir { get; set; } = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),

@@ -16,6 +16,7 @@ public partial class SettingsWindow : Window
     private readonly ComboBox _tileHotkeyCombo;
     private readonly ComboBox _micCombo;
     private readonly StackPanel _monitorList;
+    private readonly CheckBox _overrideSnapCheck;
     private readonly TextBlock _conflictWarning;
     private readonly List<(CheckBox Check, string DeviceName)> _monitorChecks = new();
 
@@ -45,6 +46,7 @@ public partial class SettingsWindow : Window
         _tileHotkeyCombo = this.FindControl<ComboBox>("TileHotkeyCombo")!;
         _micCombo = this.FindControl<ComboBox>("MicCombo")!;
         _monitorList = this.FindControl<StackPanel>("MonitorList")!;
+        _overrideSnapCheck = this.FindControl<CheckBox>("OverrideSnapCheck")!;
         _conflictWarning = this.FindControl<TextBlock>("ConflictWarning")!;
 
         var saveButton = this.FindControl<Button>("SaveButton")!;
@@ -99,6 +101,9 @@ public partial class SettingsWindow : Window
 
         // Monitor enumeration
         LoadMonitors();
+
+        // Snap Layout override
+        _overrideSnapCheck.IsChecked = _config.OverrideSnapLayouts;
     }
 
     private void LoadMonitors()
@@ -221,6 +226,10 @@ public partial class SettingsWindow : Window
             _config.EnabledMonitors = null; // all monitors
         else
             _config.EnabledMonitors = enabled;
+
+        // Snap Layout override
+        _config.OverrideSnapLayouts = _overrideSnapCheck.IsChecked == true;
+        SnapLayoutControl.Apply(_config.OverrideSnapLayouts);
 
         _config.Save();
         SettingsSaved?.Invoke();
