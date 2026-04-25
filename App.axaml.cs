@@ -383,8 +383,10 @@ public class App : Application
                 var prevSlot = _tiling.FindSlotForHwnd(hwnd);
                 if (prevSlot >= 0)
                 {
+                    var tilingMonitor = _tiling.ActiveMonitor;
                     _tiling.RemoveWindow(hwnd);
-                    _tiling.Rebalance(_currentMonitor);
+                    if (tilingMonitor != nint.Zero)
+                        _tiling.Rebalance(tilingMonitor);
                 }
             }
             Dispatcher.UIThread.Post(DismissOverlay);
@@ -439,8 +441,10 @@ public class App : Application
                 var prevSlot = _tiling.FindSlotForHwnd(hwnd);
                 if (prevSlot >= 0)
                 {
+                    var tilingMonitor = _tiling.ActiveMonitor;
                     _tiling.RemoveWindow(hwnd);
-                    _tiling.Rebalance(_currentMonitor);
+                    if (tilingMonitor != nint.Zero)
+                        _tiling.Rebalance(tilingMonitor);
                 }
             }
             Dispatcher.UIThread.Post(DismissOverlay);

@@ -37,6 +37,9 @@ public sealed class TilingCoordinator : IDisposable
     /// <summary>Grid layout for 6-pane: "2x3" (2 rows × 3 cols) or "3x2" (3 rows × 2 cols).</summary>
     public string Layout { get; set; } = "2x3";
 
+    /// <summary>The monitor where tiled windows are currently positioned.</summary>
+    public nint ActiveMonitor => _activeMonitor;
+
     public TilingCoordinator(ILogger<TilingCoordinator> logger)
     {
         _logger = logger;
