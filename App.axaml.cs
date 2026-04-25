@@ -47,7 +47,6 @@ public class App : Application
             _voice.StatusMessage += OnVoiceStatusMessage;
 
             _tiling = TinyBossServices.Provider.GetRequiredService<TilingCoordinator>();
-            _tiling.GridSize = _config.NormalizedGridSize;
             _tiling.SlotsChanged += OnSlotsChanged;
 
             _dragWatcher = TinyBossServices.Provider.GetRequiredService<DragWatcher>();
@@ -58,7 +57,6 @@ public class App : Application
             _hotkeys = TinyBossServices.Provider.GetRequiredService<HotKeyListener>();
             _hotkeys.TileKeyPressed += OnTileKeyPressed;
             _hotkeys.RebalanceKeyPressed += OnRebalanceKeyPressed;
-            _hotkeys.OverlayCycleLayout += OnOverlayCycleLayout;
             _hotkeys.OverlayDismiss += OnOverlayDismiss;
 
             SetupTrayIcon();
@@ -165,7 +163,7 @@ public class App : Application
         menu.Add(new NativeMenuItemSeparator());
 
         // Tiling actions
-        var tileItem = new NativeMenuItem($"📐 Tile Windows ({_tiling?.GridSize ?? 4}-pane)");
+        var tileItem = new NativeMenuItem($"📐 Tile Windows (auto {_tiling?.GridSize ?? 0}-pane)");
         tileItem.Click += (_, _) => OnTileKeyPressed();
         menu.Add(tileItem);
 
@@ -174,6 +172,21 @@ public class App : Application
         menu.Add(rebalanceItem);
 
         menu.Add(new NativeMenuItemSeparator());
+
+        // Tiled windows — rename entries
+        var tiledSnapshot = _tiling?.GetSnapshot() ?? new Dictionary<int, TileSlot>();
+        if (tiledSnapshot.Count > 0)
+        {
+            foreach (var (slot, ts) in tiledSnapshot.OrderBy(kv => kv.Key))
+            {
+                var label = ts.Alias ?? $"Window (slot {slot + 1})";
+                var capturedSlot = slot;
+                var renameItem = new NativeMenuItem($"✏️ {label}");
+                renameItem.Click += (_, _) => ShowRenameDialog(capturedSlot, ts.Alias ?? "");
+                menu.Add(renameItem);
+            }
+            menu.Add(new NativeMenuItemSeparator());
+        }
 
         var settingsItem = new NativeMenuItem("⚙️ Settings");
         settingsItem.Click += (_, _) => ShowSettings();
@@ -216,22 +229,6 @@ public class App : Application
         _tiling.Rebalance(monitor);
     }
 
-    private void OnOverlayCycleLayout()
-    {
-        Dispatcher.UIThread.Post(() =>
-        {
-            if (_overlay is null || !_overlay.IsVisible) return;
-            var newSize = _overlay.CycleGridSize();
-            if (_tiling is not null) _tiling.GridSize = newSize;
-            if (_config is not null)
-            {
-                _config.GridSize = newSize;
-                _config.Save();
-            }
-            RebuildTrayMenu();
-        });
-    }
-
     private void OnOverlayDismiss() =>
         Dispatcher.UIThread.Post(DismissOverlay);
 
@@ -241,17 +238,26 @@ public class App : Application
         var info = new MONITORINFO { cbSize = (uint)System.Runtime.InteropServices.Marshal.SizeOf<MONITORINFO>() };
         TilingCoordinator.GetMonitorInfo(_currentMonitor, ref info);
 
-        _currentPaneBounds = TilingCoordinator.GetPaneBounds(_currentMonitor, _tiling?.GridSize ?? 4);
+        var gridSize = _tiling?.GridSize ?? 1;
+        _currentPaneBounds = TilingCoordinator.GetPaneBounds(_currentMonitor, gridSize);
 
         _overlay = new TileOverlay();
         _overlay.SetMonitorBounds(info.rcWork, info.rcMonitor);
-        _overlay.SetGridSize(_tiling?.GridSize ?? 4);
+        _overlay.SetGridSize(gridSize);
 
-        // Mark occupied slots
+        // Mark occupied slots with aliases
         var snapshot = _tiling?.GetSnapshot() ?? new Dictionary<int, TileSlot>();
-        _overlay.SetOccupiedSlots(new HashSet<int>(snapshot.Keys));
+        var aliases = snapshot.Where(kv => kv.Value.Alias is not null)
+            .ToDictionary(kv => kv.Key, kv => kv.Value.Alias!);
+        _overlay.SetOccupiedSlots(new HashSet<int>(snapshot.Keys), aliases);
 
         _overlay.DismissRequested += () => Dispatcher.UIThread.Post(DismissOverlay);
+        _overlay.RenameRequested += slot =>
+        {
+            var snapshot = _tiling?.GetSnapshot();
+            var currentAlias = snapshot?.TryGetValue(slot, out var ts) == true ? ts.Alias ?? "" : "";
+            ShowRenameDialog(slot, currentAlias);
+        };
         _overlay.Show();
         _hotkeys?.SetOverlayActive(true);
     }
@@ -283,24 +289,19 @@ public class App : Application
     {
         if (_overlay is null || !_overlay.IsVisible || _currentPaneBounds is null) return;
 
+        // Terminal-only filter
+        if (!TerminalDetector.IsTerminalWindow(hwnd))
+            return;
+
         var slot = TilingCoordinator.HitTestSlot(screenX, screenY, _currentPaneBounds);
         if (slot >= 0 && _tiling is not null)
         {
-            // Don't overwrite an occupied slot — find the first empty one instead
+            // If dropped on occupied slot, auto-assign to first empty slot
             if (_tiling.IsSlotOccupied(slot))
             {
-                var gridSize = _tiling.GridSize;
-                int? emptySlot = null;
-                for (int i = 0; i < gridSize; i++)
-                {
-                    if (!_tiling.IsSlotOccupied(i))
-                    {
-                        emptySlot = i;
-                        break;
-                    }
-                }
-                if (emptySlot is null) return; // All full, do nothing
-                slot = emptySlot.Value;
+                var empty = _tiling.FindNextEmptySlot();
+                if (empty < 0) return; // at capacity
+                slot = empty;
             }
 
             // Find session ID if this is a managed session
@@ -313,17 +314,24 @@ public class App : Application
             }
 
             _tiling.AssignToSlot(slot, hwnd, sessionId);
-            _tiling.PositionWindow(slot, _currentMonitor);
+            _tiling.PositionAll(_currentMonitor); // reposition all with new grid size
 
-            // Update overlay occupied slots
+            // Update overlay
             Dispatcher.UIThread.Post(() =>
             {
                 var snapshot = _tiling.GetSnapshot();
-                _overlay?.SetOccupiedSlots(new HashSet<int>(snapshot.Keys));
+                var gridSize = _tiling.GridSize;
+                _overlay?.SetGridSize(gridSize);
+                var aliases = snapshot.Where(kv => kv.Value.Alias is not null)
+                    .ToDictionary(kv => kv.Key, kv => kv.Value.Alias!);
+                _overlay?.SetOccupiedSlots(new HashSet<int>(snapshot.Keys), aliases);
                 _overlay?.HighlightZone(-1);
 
-                // Auto-dismiss if all slots filled
-                if (snapshot.Count >= (_tiling.GridSize))
+                // Refresh pane bounds with new grid size
+                _currentPaneBounds = TilingCoordinator.GetPaneBounds(_currentMonitor, gridSize);
+
+                // Auto-dismiss if all slots filled (6 max)
+                if (snapshot.Count >= 6)
                     DismissOverlay();
             });
         }
@@ -352,6 +360,22 @@ public class App : Application
         if (_config is null) return;
         _hotkeys?.RequestReRegister();
         RebuildTrayMenu();
+    }
+
+    private void ShowRenameDialog(int slot, string currentAlias)
+    {
+        Dispatcher.UIThread.Post(async () =>
+        {
+            var dialog = new RenameDialog(currentAlias);
+            dialog.Closed += (_, _) =>
+            {
+                if (dialog.AliasResult is { } alias && _tiling is not null)
+                {
+                    _tiling.RenameSlot(slot, alias);
+                }
+            };
+            dialog.Show();
+        });
     }
 
     private void CheckFirstRun()

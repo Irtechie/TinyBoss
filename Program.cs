@@ -36,6 +36,7 @@ builder.Services.AddSingleton<KillHandler>();
 builder.Services.AddSingleton<IntrospectHandler>();
 builder.Services.AddSingleton<SignalHandler>();
 builder.Services.AddSingleton<AnswerUserHandler>();
+builder.Services.AddSingleton<RenameHandler>();
 
 // Voice input pipeline
 builder.Services.AddSingleton<HotKeyListener>();
@@ -60,6 +61,7 @@ if (string.IsNullOrEmpty(authToken))
 app.MapGet("/ws", async (HttpContext ctx,
     SpawnHandler spawn, InjectHandler inject, KillHandler kill,
     IntrospectHandler introspect, SignalHandler signal, AnswerUserHandler answerUser,
+    RenameHandler rename,
     ILogger<Program> logger) =>
 {
     if (!ctx.WebSockets.IsWebSocketRequest)
@@ -72,7 +74,7 @@ app.MapGet("/ws", async (HttpContext ctx,
     logger.LogInformation("KH: Client connected");
 
     var handler = new MessageHandler(
-        spawn, inject, kill, introspect, signal, answerUser,
+        spawn, inject, kill, introspect, signal, answerUser, rename,
         ctx.RequestServices.GetRequiredService<ILogger<MessageHandler>>(),
         authToken);
 

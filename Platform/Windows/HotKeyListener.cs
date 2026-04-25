@@ -31,7 +31,7 @@ public sealed class HotKeyListener : IDisposable
     private readonly TinyBossConfig _config;
     private readonly ILogger<HotKeyListener> _logger;
 
-    // Overlay mode: when true, poll for Tab (cycle layout) and Escape (dismiss)
+    // Overlay mode: when true, poll for Escape (dismiss)
     private volatile bool _overlayActive;
 
     /// <summary>Fires when the voice hotkey is pressed down.</summary>
@@ -45,9 +45,6 @@ public sealed class HotKeyListener : IDisposable
 
     /// <summary>Fires when the rebalance hotkey is pressed.</summary>
     public event Action? RebalanceKeyPressed;
-
-    /// <summary>Fires when Tab is pressed while overlay is active (cycle layout).</summary>
-    public event Action? OverlayCycleLayout;
 
     /// <summary>Fires when Escape is pressed while overlay is active (dismiss).</summary>
     public event Action? OverlayDismiss;
@@ -94,7 +91,6 @@ public sealed class HotKeyListener : IDisposable
         RegisterHotKeyWithLog(HOTKEY_REBALANCE, lastRebalMods | MOD_NOREPEAT, lastRebalKey, "Rebalance");
 
         var voiceDown = false;
-        var tabWasDown = false;
         var escWasDown = false;
 
         while (!_disposed)
@@ -168,14 +164,9 @@ public sealed class HotKeyListener : IDisposable
                 VoiceKeyUp?.Invoke();
             }
 
-            // Poll for Tab/Escape when overlay is active
+            // Poll for Escape when overlay is active
             if (_overlayActive)
             {
-                bool tabDown = (GetAsyncKeyState(0x09) & 0x8000) != 0; // VK_TAB
-                if (tabDown && !tabWasDown)
-                    OverlayCycleLayout?.Invoke();
-                tabWasDown = tabDown;
-
                 bool escDown = (GetAsyncKeyState(0x1B) & 0x8000) != 0; // VK_ESCAPE
                 if (escDown && !escWasDown)
                     OverlayDismiss?.Invoke();
@@ -183,7 +174,6 @@ public sealed class HotKeyListener : IDisposable
             }
             else
             {
-                tabWasDown = false;
                 escWasDown = false;
             }
 

@@ -10,7 +10,7 @@ namespace TinyBoss.Platform.Windows;
 /// 4-pane: [0=TopLeft, 1=TopRight, 2=BottomLeft, 3=BottomRight]
 /// 6-pane: [0=TopLeft, 1=TopCenter, 2=TopRight, 3=BottomLeft, 4=BottomCenter, 5=BottomRight]
 /// </summary>
-public sealed record TileSlot(nint Hwnd, int ProcessId, string? SessionId);
+public sealed record TileSlot(nint Hwnd, int ProcessId, string? SessionId, string? Alias = null);
 
 /// <summary>
 /// Coordinates all tiling state and Win32 window positioning.
@@ -23,9 +23,12 @@ public sealed class TilingCoordinator : IDisposable
     private readonly Dictionary<int, TileSlot> _slots = new();
     private readonly Dictionary<nint, RegisteredWaitHandle> _processWaits = new();
     private readonly ILogger<TilingCoordinator> _logger;
-    private int _gridSize;
     private nint _activeMonitor;
     private bool _disposed;
+    private Timer? _reflowDebounce;
+    private bool _dragInProgress;
+    private bool _reflowPending;
+    private const int REFLOW_DEBOUNCE_MS = 100;
 
     /// <summary>Fires after any slot mutation. Subscribers must marshal to UI thread.</summary>
     public event Action? SlotsChanged;
@@ -33,13 +36,22 @@ public sealed class TilingCoordinator : IDisposable
     public TilingCoordinator(ILogger<TilingCoordinator> logger)
     {
         _logger = logger;
-        _gridSize = 4;
     }
 
+    /// <summary>Grid size computed from occupied window count — no manual setter.</summary>
     public int GridSize
     {
-        get { lock (_lock) return _gridSize; }
-        set { lock (_lock) _gridSize = NormalizeGridSize(value); }
+        get
+        {
+            lock (_lock)
+                return OccupiedCount switch
+                {
+                    0 or 1 => 1,
+                    2 => 2,
+                    3 or 4 => 4,
+                    _ => 6,
+                };
+        }
     }
 
     // ── Slot queries (thread-safe) ───────────────────────────────────────────
@@ -75,7 +87,8 @@ public sealed class TilingCoordinator : IDisposable
                 return false;
             }
 
-            if (slot < 0 || slot >= _gridSize)
+            // Capacity check: max 6 windows
+            if (_slots.Count >= 6 && !_slots.ContainsKey(slot) && !_slots.Any(kv => kv.Value.Hwnd == hwnd))
                 return false;
 
             // If this HWND is already in another slot, remove it first
@@ -124,6 +137,63 @@ public sealed class TilingCoordinator : IDisposable
         SlotsChanged?.Invoke();
     }
 
+    // ── Drag-aware reflow ────────────────────────────────────────────────────
+
+    public void OnDragStarted() => _dragInProgress = true;
+
+    public void OnDragEnded(nint monitorHandle)
+    {
+        _dragInProgress = false;
+        if (_reflowPending)
+        {
+            _reflowPending = false;
+            ScheduleReflow(monitorHandle);
+        }
+    }
+
+    /// <summary>Schedule a debounced rebalance + reposition on the given monitor.</summary>
+    public void ScheduleReflow(nint monitorHandle)
+    {
+        if (_dragInProgress)
+        {
+            _reflowPending = true;
+            return;
+        }
+        _reflowDebounce?.Dispose();
+        _reflowDebounce = new Timer(_ =>
+        {
+            Rebalance(monitorHandle);
+        }, null, REFLOW_DEBOUNCE_MS, Timeout.Infinite);
+    }
+
+    /// <summary>
+    /// Rename a tiled window — sets internal alias and calls SetWindowText (one-shot courtesy).
+    /// </summary>
+    public bool RenameSlot(int slot, string alias)
+    {
+        lock (_lock)
+        {
+            if (!_slots.TryGetValue(slot, out var ts)) return false;
+            if (!IsWindow(ts.Hwnd)) { RemoveSlotLocked(slot); return false; }
+            _slots[slot] = ts with { Alias = alias };
+            SetWindowText(ts.Hwnd, alias); // terminals overwrite in 0-5ms; alias is source of truth
+        }
+        SlotsChanged?.Invoke();
+        return true;
+    }
+
+    /// <summary>Find the first empty slot in the current grid. Returns -1 if full.</summary>
+    public int FindNextEmptySlot()
+    {
+        lock (_lock)
+        {
+            int max = GridSize;
+            for (int i = 0; i < max; i++)
+                if (!_slots.ContainsKey(i)) return i;
+            return -1;
+        }
+    }
+
     /// <summary>
     /// Rebalance: compact occupied windows into contiguous slots and reposition.
     /// </summary>
@@ -160,7 +230,7 @@ public sealed class TilingCoordinator : IDisposable
             if (!_slots.TryGetValue(slot, out var tileSlot)) return;
             if (!IsWindow(tileSlot.Hwnd)) { RemoveSlotLocked(slot); return; }
 
-            var bounds = GetPaneBounds(monitorHandle, _gridSize);
+            var bounds = GetPaneBounds(monitorHandle, GridSize);
             if (!bounds.TryGetValue(slot, out var rect)) return;
 
             // Restore window if minimized
@@ -183,10 +253,19 @@ public sealed class TilingCoordinator : IDisposable
     {
         if (_slots.Count == 0) return;
 
-        var bounds = GetPaneBounds(monitorHandle, _gridSize);
-        var hdwp = BeginDeferWindowPos(_slots.Count);
+        var bounds = GetPaneBounds(monitorHandle, GridSize);
 
-        foreach (var (slot, tileSlot) in _slots)
+        // Pre-validate — remove dead windows before batching
+        var deadSlots = _slots.Where(kv => !IsWindow(kv.Value.Hwnd)).Select(kv => kv.Key).ToList();
+        foreach (var s in deadSlots) RemoveSlotLocked(s);
+
+        var validSlots = _slots.Where(kv => bounds.ContainsKey(kv.Key)).ToList();
+        if (validSlots.Count == 0) return;
+
+        var hdwp = BeginDeferWindowPos(validSlots.Count);
+        if (hdwp == nint.Zero) return;
+
+        foreach (var (slot, tileSlot) in validSlots)
         {
             if (!bounds.TryGetValue(slot, out var rect)) continue;
             if (!IsWindow(tileSlot.Hwnd)) continue;
@@ -226,6 +305,10 @@ public sealed class TilingCoordinator : IDisposable
 
         switch (NormalizeGridSize(gridSize))
         {
+            case 1: // fullscreen
+                result[0] = new RECT(wa.Left, wa.Top, wa.Right, wa.Bottom);
+                break;
+
             case 2: // side-by-side
                 result[0] = new RECT(wa.Left, wa.Top, wa.Left + w / 2, wa.Bottom);
                 result[1] = new RECT(wa.Left + w / 2, wa.Top, wa.Right, wa.Bottom);
@@ -361,6 +444,7 @@ public sealed class TilingCoordinator : IDisposable
 
     public static int NormalizeGridSize(int size) => size switch
     {
+        0 or 1 => 1,
         2 => 2,
         6 => 6,
         _ => 4,
@@ -429,6 +513,8 @@ public sealed class TilingCoordinator : IDisposable
 
     private delegate bool EnumWindowsProc(nint hWnd, nint lParam);
     [DllImport("user32.dll")] private static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, nint lParam);
+    [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
+    public static extern bool SetWindowText(nint hWnd, string lpString);
 }
 
 internal static class WaitHandleExtensions

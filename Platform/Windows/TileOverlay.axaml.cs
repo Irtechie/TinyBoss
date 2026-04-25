@@ -26,6 +26,7 @@ public partial class TileOverlay : Window
     private int _gridSize = 4;
     private int _highlightedSlot = -1;
     private HashSet<int> _occupiedSlots = new();
+    private Dictionary<int, string> _slotAliases = new();
 
     // Monitor working area in physical pixels (set before showing)
     private RECT _workArea;
@@ -46,6 +47,9 @@ public partial class TileOverlay : Window
     /// <summary>Fires when the overlay should be dismissed (click outside zones).</summary>
     public event Action? DismissRequested;
 
+    /// <summary>Fires when a slot is right-clicked for rename. Arg: slot index.</summary>
+    public event Action<int>? RenameRequested;
+
     /// <summary>Set the monitor working area and position the overlay to fill it.</summary>
     public void SetMonitorBounds(RECT workArea, RECT monitorBounds)
     {
@@ -61,14 +65,15 @@ public partial class TileOverlay : Window
     /// <summary>Update which grid size to display.</summary>
     public void SetGridSize(int gridSize)
     {
-        _gridSize = gridSize switch { 2 => 2, 6 => 6, _ => 4 };
+        _gridSize = TilingCoordinator.NormalizeGridSize(gridSize);
         Redraw();
     }
 
     /// <summary>Update which slots are already occupied.</summary>
-    public void SetOccupiedSlots(HashSet<int> occupied)
+    public void SetOccupiedSlots(HashSet<int> occupied, Dictionary<int, string>? aliases = null)
     {
         _occupiedSlots = occupied;
+        _slotAliases = aliases ?? new();
         Redraw();
     }
 
@@ -78,14 +83,6 @@ public partial class TileOverlay : Window
         if (_highlightedSlot == slot) return;
         _highlightedSlot = slot;
         Redraw();
-    }
-
-    /// <summary>Cycle grid: 2→4→6→2.</summary>
-    public int CycleGridSize()
-    {
-        _gridSize = _gridSize switch { 2 => 4, 4 => 6, _ => 2 };
-        Redraw();
-        return _gridSize;
     }
 
     private void Redraw()
@@ -129,11 +126,28 @@ public partial class TileOverlay : Window
             Canvas.SetTop(zone, localTop + 2);
             _canvas.Children.Add(zone);
 
-            // Slot number label
+            // Right-click occupied zones to rename
+            if (_occupiedSlots.Contains(slot))
+            {
+                var capturedSlot = slot;
+                zone.PointerPressed += (_, e) =>
+                {
+                    if (e.GetCurrentPoint(zone).Properties.IsRightButtonPressed)
+                    {
+                        e.Handled = true;
+                        RenameRequested?.Invoke(capturedSlot);
+                    }
+                };
+            }
+
+            // Slot number label (show alias if available)
+            var labelText = _slotAliases.TryGetValue(slot, out var alias) && !string.IsNullOrEmpty(alias)
+                ? alias : (slot + 1).ToString();
+            var fontSize = labelText.Length > 3 ? 24.0 : 48.0;
             var label = new TextBlock
             {
-                Text = (slot + 1).ToString(),
-                FontSize = 48,
+                Text = labelText,
+                FontSize = fontSize,
                 Foreground = Brushes.White,
                 Opacity = 0.5,
                 HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Center,

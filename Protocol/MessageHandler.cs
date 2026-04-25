@@ -20,6 +20,7 @@ public sealed class MessageHandler
     private readonly IntrospectHandler _introspect;
     private readonly SignalHandler _signal;
     private readonly AnswerUserHandler _answerUser;
+    private readonly RenameHandler _rename;
     private readonly ILogger<MessageHandler> _logger;
     private readonly string _authToken;
 
@@ -30,6 +31,7 @@ public sealed class MessageHandler
     public MessageHandler(
         SpawnHandler spawn, InjectHandler inject, KillHandler kill,
         IntrospectHandler introspect, SignalHandler signal, AnswerUserHandler answerUser,
+        RenameHandler rename,
         ILogger<MessageHandler> logger, string authToken)
     {
         _spawn = spawn;
@@ -38,6 +40,7 @@ public sealed class MessageHandler
         _introspect = introspect;
         _signal = signal;
         _answerUser = answerUser;
+        _rename = rename;
         _logger = logger;
         _authToken = authToken;
     }
@@ -136,6 +139,9 @@ public sealed class MessageHandler
                         break;
                     case KhMessageType.AnswerUser:
                         await _answerUser.HandleAsync(envelope, send, ct);
+                        break;
+                    case KhMessageType.Rename:
+                        await _rename.HandleAsync(envelope, send, ct);
                         break;
                     default:
                         _logger.LogDebug("KH: Unknown message type: {Type}", envelope.Type);

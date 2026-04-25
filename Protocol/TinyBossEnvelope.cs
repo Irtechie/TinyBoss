@@ -31,6 +31,7 @@ public static class KhMessageType
     public const string Signal      = "signal";
     public const string Introspect  = "introspect";
     public const string AnswerUser  = "answer_user";
+    public const string Rename      = "rename";
 
     // KH → Logos
     public const string HelloAck        = "hello_ack";
@@ -94,4 +95,9 @@ public sealed record SessionInfo(
 
 public sealed record IntrospectReplyPayload(
     [property: JsonPropertyName("sessions")] SessionInfo[] Sessions
+);
+
+public sealed record RenamePayload(
+    [property: JsonPropertyName("slot")]  int Slot,
+    [property: JsonPropertyName("alias")] string Alias
 );
