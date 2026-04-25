@@ -27,9 +27,11 @@ public sealed class TilingCoordinator : IDisposable
     private nint _activeMonitor;
     private bool _disposed;
     private Timer? _reflowDebounce;
+    private Timer? _aliasEnforcer;
     private bool _dragInProgress;
     private bool _reflowPending;
     private const int REFLOW_DEBOUNCE_MS = 100;
+    private const int ALIAS_ENFORCE_MS = 500;
 
     /// <summary>Fires after any slot mutation. Subscribers must marshal to UI thread.</summary>
     public event Action? SlotsChanged;
@@ -221,7 +223,7 @@ public sealed class TilingCoordinator : IDisposable
     }
 
     /// <summary>
-    /// Rename a tiled window — sets internal alias and calls SetWindowText (one-shot courtesy).
+    /// Rename a tiled window — sets internal alias and enforces it periodically.
     /// </summary>
     public bool RenameSlot(int slot, string alias)
     {
@@ -230,10 +232,40 @@ public sealed class TilingCoordinator : IDisposable
             if (!_slots.TryGetValue(slot, out var ts)) return false;
             if (!IsWindow(ts.Hwnd)) { RemoveSlotLocked(slot); return false; }
             _slots[slot] = ts with { Alias = alias };
-            SetWindowText(ts.Hwnd, alias); // terminals overwrite in 0-5ms; alias is source of truth
+            SetWindowText(ts.Hwnd, alias);
+            StartAliasEnforcerIfNeeded();
         }
         SlotsChanged?.Invoke();
         return true;
+    }
+
+    /// <summary>Starts a periodic timer that re-applies aliases when terminals overwrite them.</summary>
+    private void StartAliasEnforcerIfNeeded()
+    {
+        if (_aliasEnforcer is not null) return;
+        _aliasEnforcer = new Timer(_ => EnforceAliases(), null, ALIAS_ENFORCE_MS, ALIAS_ENFORCE_MS);
+    }
+
+    private void EnforceAliases()
+    {
+        lock (_lock)
+        {
+            bool hasAliases = false;
+            foreach (var kv in _slots)
+            {
+                if (kv.Value.Alias is not { } alias) continue;
+                hasAliases = true;
+                if (!IsWindow(kv.Value.Hwnd)) continue;
+                var current = GetWindowTitle(kv.Value.Hwnd);
+                if (current != alias)
+                    SetWindowText(kv.Value.Hwnd, alias);
+            }
+            if (!hasAliases)
+            {
+                _aliasEnforcer?.Dispose();
+                _aliasEnforcer = null;
+            }
+        }
     }
 
     /// <summary>Find the first empty slot in the current grid. Returns -1 if full.</summary>
@@ -522,6 +554,9 @@ public sealed class TilingCoordinator : IDisposable
     {
         if (_disposed) return;
         _disposed = true;
+
+        _aliasEnforcer?.Dispose();
+        _reflowDebounce?.Dispose();
 
         lock (_lock)
         {
