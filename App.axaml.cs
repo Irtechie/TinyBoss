@@ -336,7 +336,10 @@ public class App : Application
         var info = new MONITORINFO { cbSize = (uint)System.Runtime.InteropServices.Marshal.SizeOf<MONITORINFO>() };
         TilingCoordinator.GetMonitorInfo(monitor, ref info);
 
-        var gridSize = _tiling?.GridSizeForNextWindow ?? 1;
+        // If this is a different monitor than where tiles currently live, treat as empty
+        var activeMonitor = _tiling?.ActiveMonitor ?? nint.Zero;
+        var isDifferentMonitor = activeMonitor != nint.Zero && monitor != activeMonitor && (_tiling?.OccupiedCount ?? 0) > 0;
+        var gridSize = isDifferentMonitor ? 1 : (_tiling?.GridSizeForNextWindow ?? 1);
         var layout = _config?.GridLayout ?? "2x3";
         _currentPaneBounds = TilingCoordinator.GetPaneBounds(monitor, gridSize, layout);
 
@@ -345,7 +348,10 @@ public class App : Application
         _overlay.SetMonitorBounds(info.rcWork, info.rcMonitor);
         _overlay.SetGridSize(gridSize);
 
-        var snapshot = _tiling?.GetSnapshot() ?? new Dictionary<int, TileSlot>();
+        // Don't show occupied slots from other monitor
+        var snapshot = isDifferentMonitor
+            ? new Dictionary<int, TileSlot>()
+            : (_tiling?.GetSnapshot() ?? new Dictionary<int, TileSlot>());
         var aliases = snapshot.Where(kv => kv.Value.Alias is not null)
             .ToDictionary(kv => kv.Key, kv => kv.Value.Alias!);
         _overlay.SetOccupiedSlots(new HashSet<int>(snapshot.Keys), aliases);
@@ -403,9 +409,18 @@ public class App : Application
 
             if (droppedOnDifferentMonitor)
             {
-                // Dragged to a different monitor — rebalance rest on original (already removed at drag start)
-                if (_tiling.OccupiedCount > 0)
-                    _tiling.Rebalance(originalMonitor);
+                // Rebalance remaining windows on the original monitor
+                _tiling.Rebalance(originalMonitor);
+
+                // Position just this window on the new monitor (don't use PositionAll
+                // which would move everything). Place it fullscreen on target monitor.
+                var targetInfo = new MONITORINFO { cbSize = (uint)System.Runtime.InteropServices.Marshal.SizeOf<MONITORINFO>() };
+                TilingCoordinator.GetMonitorInfo(_currentMonitor, ref targetInfo);
+                var wa = targetInfo.rcWork;
+                TilingCoordinator.SetWindowPos(hwnd, nint.Zero,
+                    wa.Left, wa.Top, wa.Right - wa.Left, wa.Bottom - wa.Top,
+                    0x0010 | 0x0004 | 0x0040); // SWP_NOACTIVATE | SWP_NOZORDER | SWP_SHOWWINDOW
+
                 Dispatcher.UIThread.Post(DismissOverlay);
                 return;
             }
