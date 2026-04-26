@@ -18,6 +18,8 @@ public sealed class TextInjector
     private const int ClipboardOpenAttempts = 24;
     private const int ClipboardOpenRetryDelayMs = 25;
     private const int SendInputBatchChars = 128;
+    private const int SendInputFallbackMaxChars = 24;
+    private const int ErrorInvalidWindowHandle = 1400;
     private static readonly object ClipboardOwnerLock = new();
     private static nint _clipboardOwnerWindow;
 
@@ -97,9 +99,12 @@ public sealed class TextInjector
 
         if (session is null)
         {
-            var method = await AppendViaFocusedWindowAsync(text, ct);
-            _logger.LogInformation("KH: Voice appended {N} chars via {Method} into focused window", text.Length, method);
-            return (true, $"Typed into focused window ({method})");
+            var append = await AppendViaFocusedWindowAsync(text, ct);
+            _logger.LogInformation("KH: Voice append into focused window success={Success} chars={N} method={Method}",
+                append.Success, text.Length, append.Message);
+            return append.Success
+                ? (true, $"Typed into focused window ({append.Message})")
+                : (false, append.Message);
         }
 
         try
@@ -114,8 +119,10 @@ public sealed class TextInjector
         }
         catch (InvalidOperationException)
         {
-            var method = await AppendViaFocusedWindowAsync(text, ct);
-            return (true, $"Typed into focused window ({method})");
+            var append = await AppendViaFocusedWindowAsync(text, ct);
+            return append.Success
+                ? (true, $"Typed into focused window ({append.Message})")
+                : (false, append.Message);
         }
         catch (Exception ex)
         {
@@ -165,18 +172,25 @@ public sealed class TextInjector
         }
     }
 
-    private async Task<string> AppendViaFocusedWindowAsync(string text, CancellationToken ct)
+    private async Task<FocusedAppendAttempt> AppendViaFocusedWindowAsync(string text, CancellationToken ct)
     {
         var paste = TryPasteViaClipboard(text, moveToEnd: true);
         if (!paste.Success)
         {
             _logger.LogInformation("KH: Voice clipboard paste failed for {N} chars: {Reason}", text.Length, paste.Method);
+            if (text.Length > SendInputFallbackMaxChars)
+            {
+                return new FocusedAppendAttempt(
+                    false,
+                    $"Clipboard paste failed ({paste.Method}); transcript preserved instead of slow SendInput");
+            }
+
             TypeViaKeyboard(text, moveToEnd: true);
-            return $"batched SendInput after clipboard failure ({paste.Method})";
+            return new FocusedAppendAttempt(true, $"batched SendInput after clipboard failure ({paste.Method})");
         }
 
         await Task.Delay(250, ct);
-        return paste.Method;
+        return new FocusedAppendAttempt(true, paste.Method);
     }
 
     private static ClipboardPasteAttempt TryPasteViaClipboard(string text, bool moveToEnd)
@@ -324,14 +338,18 @@ public sealed class TextInjector
 
     private static bool TryOpenClipboard()
     {
-        var owner = GetClipboardOwnerWindow();
-        if (owner == nint.Zero)
-            return false;
-
         for (var i = 0; i < ClipboardOpenAttempts; i++)
         {
+            var owner = GetClipboardOwnerWindow();
+            if (owner == nint.Zero)
+                return false;
+
             if (OpenClipboard(owner))
                 return true;
+
+            if (Marshal.GetLastWin32Error() == ErrorInvalidWindowHandle)
+                ResetClipboardOwnerWindow(owner);
+
             Thread.Sleep(ClipboardOpenRetryDelayMs);
         }
 
@@ -340,12 +358,12 @@ public sealed class TextInjector
 
     private static nint GetClipboardOwnerWindow()
     {
-        if (_clipboardOwnerWindow != nint.Zero)
+        if (_clipboardOwnerWindow != nint.Zero && IsWindow(_clipboardOwnerWindow))
             return _clipboardOwnerWindow;
 
         lock (ClipboardOwnerLock)
         {
-            if (_clipboardOwnerWindow != nint.Zero)
+            if (_clipboardOwnerWindow != nint.Zero && IsWindow(_clipboardOwnerWindow))
                 return _clipboardOwnerWindow;
 
             _clipboardOwnerWindow = CreateWindowEx(
@@ -363,6 +381,15 @@ public sealed class TextInjector
                 nint.Zero);
 
             return _clipboardOwnerWindow;
+        }
+    }
+
+    private static void ResetClipboardOwnerWindow(nint owner)
+    {
+        lock (ClipboardOwnerLock)
+        {
+            if (_clipboardOwnerWindow == owner)
+                _clipboardOwnerWindow = nint.Zero;
         }
     }
 
@@ -433,6 +460,9 @@ public sealed class TextInjector
     [DllImport("user32.dll", SetLastError = true)]
     private static extern bool OpenClipboard(nint hWndNewOwner);
 
+    [DllImport("user32.dll")]
+    private static extern bool IsWindow(nint hWnd);
+
     [DllImport("user32.dll", SetLastError = true)]
     private static extern bool CloseClipboard();
 
@@ -482,4 +512,6 @@ public sealed class TextInjector
     private static extern nint GlobalFree(nint hMem);
 
     private sealed record ClipboardPasteAttempt(bool Success, string Method);
+
+    private sealed record FocusedAppendAttempt(bool Success, string Message);
 }
