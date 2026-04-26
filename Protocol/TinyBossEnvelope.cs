@@ -93,8 +93,23 @@ public sealed record SessionInfo(
     [property: JsonPropertyName("running")]        bool Running
 );
 
+public sealed record TiledWindowInfo(
+    [property: JsonPropertyName("device_name")]    string DeviceName,
+    [property: JsonPropertyName("monitor_handle")] string MonitorHandle,
+    [property: JsonPropertyName("slot")]           int Slot,
+    [property: JsonPropertyName("hwnd")]           string Hwnd,
+    [property: JsonPropertyName("pid")]            int Pid,
+    [property: JsonPropertyName("session_id")]     string? SessionId,
+    [property: JsonPropertyName("alias")]          string? Alias,
+    [property: JsonPropertyName("title")]          string Title,
+    [property: JsonPropertyName("running")]        bool Running,
+    [property: JsonPropertyName("text_tail")]      string[] TextTail,
+    [property: JsonPropertyName("captured_at")]    string? CapturedAt
+);
+
 public sealed record IntrospectReplyPayload(
-    [property: JsonPropertyName("sessions")] SessionInfo[] Sessions
+    [property: JsonPropertyName("sessions")]      SessionInfo[] Sessions,
+    [property: JsonPropertyName("tiled_windows")] TiledWindowInfo[] TiledWindows
 );
 
 public sealed record RenamePayload(

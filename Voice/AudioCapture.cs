@@ -20,6 +20,12 @@ public sealed class AudioCapture : IDisposable
     private bool _recording;
 
     /// <summary>
+    /// Keep native mic bytes for Stop()/SnapshotSamples(). Streaming VAD callers can
+    /// disable this so long dictation sessions do not retain all raw audio.
+    /// </summary>
+    public bool RetainRawAudio { get; set; } = true;
+
+    /// <summary>
     /// Real-time callback for streaming: fires with 16kHz mono float32 samples
     /// as they arrive from the mic. Subscribe before calling Start().
     /// </summary>
@@ -119,9 +125,12 @@ public sealed class AudioCapture : IDisposable
     {
         if (e.BytesRecorded <= 0) return;
 
-        lock (_lock)
+        if (RetainRawAudio)
         {
-            _rawBytes.AddRange(new ReadOnlySpan<byte>(e.Buffer, 0, e.BytesRecorded));
+            lock (_lock)
+            {
+                _rawBytes.AddRange(new ReadOnlySpan<byte>(e.Buffer, 0, e.BytesRecorded));
+            }
         }
 
         // Fire real-time streaming callback if anyone is listening

@@ -6,9 +6,9 @@ namespace TinyBoss.Voice;
 /// <summary>
 /// Orchestrates voice-to-text using VAD + Whisper GPU:
 /// HotKey down → Start mic → VAD detects speech/silence in real-time
-/// On each silence gap → speech chunk sent to Whisper GPU and buffered
-/// HotKey up → flush remaining audio through Whisper → append the full result once
-/// This avoids replacing existing text during long dictation sessions.
+/// On each silence gap → speech chunk sent to Whisper GPU and appended immediately
+/// HotKey up → flush remaining audio through Whisper and drain any queued chunks
+/// This keeps long dictation sessions from building one huge final paste.
 /// </summary>
 public sealed class VoiceController : IDisposable
 {
@@ -97,8 +97,10 @@ public sealed class VoiceController : IDisposable
         VoiceDiag("KEY_DOWN recording={0}", _recording);
         if (_recording) return;
 
+        _audioCapture.RetainRawAudio = false;
         if (!_audioCapture.Start())
         {
+            _audioCapture.RetainRawAudio = true;
             VoiceDiag("MIC_FAIL — no microphone available");
             StatusMessage?.Invoke("No microphone available");
             return;
@@ -262,8 +264,7 @@ public sealed class VoiceController : IDisposable
                     VoiceDiag("WHISPER \"{0}\" ({1}ms, noSpeech={2:F2})",
                         text, sw.ElapsedMilliseconds, result.NoSpeechProb);
 
-                    lock (_recognizedLock)
-                        _recognizedText.Add(text);
+                    await AppendRecognizedTextAsync(text, ct);
                 }
                 catch (OperationCanceledException) { break; }
                 catch (Exception ex)
@@ -288,6 +289,7 @@ public sealed class VoiceController : IDisposable
         RecordingStateChanged?.Invoke(false);
 
         _audioCapture.Stop();
+        _audioCapture.RetainRawAudio = true;
 
         // Flush any remaining speech that hasn't hit a silence gap
         lock (_vadLock)
@@ -309,34 +311,59 @@ public sealed class VoiceController : IDisposable
         }
         catch (AggregateException) { }
 
-        var finalText = GetAndClearRecognizedText();
-        if (!string.IsNullOrWhiteSpace(finalText))
+        var pendingText = GetAndClearRecognizedText();
+        if (!string.IsNullOrWhiteSpace(pendingText))
         {
-            var dangerousMatch = _guard.CheckDestructiveCommand(finalText);
-            if (dangerousMatch is not null)
+            try
             {
-                VoiceDiag("DESTRUCTIVE_BLOCK \"{0}\" in \"{1}\"", dangerousMatch, finalText);
-                StatusMessage?.Invoke($"Blocked dangerous command: {dangerousMatch}");
+                var (success, message) = _injector.AppendAsync(pendingText + " ", _voiceTargetSessionId).GetAwaiter().GetResult();
+                VoiceDiag("INJECT_PENDING success={0} chars={1} message=\"{2}\"", success, pendingText.Length, message);
+                if (!success)
+                    StatusMessage?.Invoke(message);
             }
-            else
+            catch (Exception ex)
             {
-                try
-                {
-                    var (success, message) = _injector.AppendAsync(finalText + " ", _voiceTargetSessionId).GetAwaiter().GetResult();
-                    VoiceDiag("INJECT_APPEND success={0} chars={1} message=\"{2}\"", success, finalText.Length, message);
-                    if (!success)
-                        StatusMessage?.Invoke(message);
-                }
-                catch (Exception ex)
-                {
-                    VoiceDiag("INJECT_ERROR {0}: {1}", ex.GetType().Name, ex.Message);
-                    StatusMessage?.Invoke($"Voice inject error: {ex.Message}");
-                }
+                VoiceDiag("PENDING_INJECT_ERROR {0}: {1}", ex.GetType().Name, ex.Message);
+                StatusMessage?.Invoke($"Voice inject error: {ex.Message}");
             }
         }
 
         VoiceDiag("SESSION_COMPLETE");
         _logger.LogInformation("KH: Voice session complete");
+    }
+
+    private async Task AppendRecognizedTextAsync(string text, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return;
+
+        var dangerousMatch = _guard.CheckDestructiveCommand(text);
+        if (dangerousMatch is not null)
+        {
+            VoiceDiag("DESTRUCTIVE_BLOCK \"{0}\" in \"{1}\"", dangerousMatch, text);
+            StatusMessage?.Invoke($"Blocked dangerous command: {dangerousMatch}");
+            return;
+        }
+
+        try
+        {
+            var appendText = text.EndsWith(' ') ? text : text + " ";
+            var (success, message) = await _injector.AppendAsync(appendText, _voiceTargetSessionId, ct);
+            VoiceDiag("INJECT_APPEND success={0} chars={1} message=\"{2}\"", success, text.Length, message);
+            if (!success)
+            {
+                StatusMessage?.Invoke(message);
+                lock (_recognizedLock)
+                    _recognizedText.Add(text);
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            VoiceDiag("INJECT_ERROR {0}: {1}", ex.GetType().Name, ex.Message);
+            StatusMessage?.Invoke($"Voice inject error: {ex.Message}");
+            lock (_recognizedLock)
+                _recognizedText.Add(text);
+        }
     }
 
     private string GetAndClearRecognizedText()

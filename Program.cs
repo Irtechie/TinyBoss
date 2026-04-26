@@ -103,10 +103,11 @@ app.MapGet("/ws", async (HttpContext ctx,
     logger.LogInformation("KH: Client disconnected");
 });
 
-app.MapGet("/health", (SessionRegistry registry) => Results.Ok(new
+app.MapGet("/health", (SessionRegistry registry, TilingCoordinator tiling) => Results.Ok(new
 {
     status = "ok",
     sessions = registry.All().Count(),
+    windows = tiling.GetAllSnapshots().Sum(s => s.Slots.Count),
     transport = "pipe:TinyBoss + tcp:8033"
 }));
 
