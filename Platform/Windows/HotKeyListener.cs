@@ -20,6 +20,12 @@ public sealed class HotKeyListener : IDisposable
     private const int VK_CONTROL = 0x11;
     private const int VK_SHIFT = 0x10;
     private const int VK_MENU = 0x12;  // Generic Alt
+    private const int VK_LSHIFT = 0xA0;
+    private const int VK_RSHIFT = 0xA1;
+    private const int VK_LCONTROL = 0xA2;
+    private const int VK_RCONTROL = 0xA3;
+    private const int VK_LMENU = 0xA4;
+    private const int VK_RMENU = 0xA5;
     private const int VK_LWIN = 0x5B;
     private const int VK_RWIN = 0x5C;
     private const int VOICE_RELEASE_DEBOUNCE_POLLS = 5;
@@ -252,7 +258,7 @@ public sealed class HotKeyListener : IDisposable
             {
                 var data = Marshal.PtrToStructure<KBDLLHOOKSTRUCT>(lParam);
                 var injected = (data.flags & LLKHF_INJECTED) != 0;
-                if (!injected)
+                if (!injected && IsVoiceRelevantKey((int)data.vkCode))
                 {
                     var transition = _voiceState.ProcessKeyEvent(
                         (int)data.vkCode,
@@ -271,6 +277,36 @@ public sealed class HotKeyListener : IDisposable
         }
 
         return CallNextHookEx(_keyboardHook, nCode, wParam, lParam);
+    }
+
+    private bool IsVoiceRelevantKey(int vkCode)
+    {
+        if (IsConfiguredVoiceKey(vkCode, _config.VoiceKey))
+            return true;
+
+        var modifiers = _config.VoiceModifiers;
+        if ((modifiers & MOD_CONTROL) != 0 && vkCode is VK_CONTROL or VK_LCONTROL or VK_RCONTROL)
+            return true;
+        if ((modifiers & MOD_SHIFT) != 0 && vkCode is VK_SHIFT or VK_LSHIFT or VK_RSHIFT)
+            return true;
+        if ((modifiers & MOD_ALT) != 0 && vkCode is VK_MENU or VK_LMENU or VK_RMENU)
+            return true;
+        if ((modifiers & MOD_WIN) != 0 && vkCode is VK_LWIN or VK_RWIN)
+            return true;
+
+        return false;
+    }
+
+    private static bool IsConfiguredVoiceKey(int vkCode, int key)
+    {
+        if (key == VK_SHIFT)
+            return vkCode is VK_SHIFT or VK_LSHIFT or VK_RSHIFT;
+        if (key == VK_CONTROL)
+            return vkCode is VK_CONTROL or VK_LCONTROL or VK_RCONTROL;
+        if (key == VK_MENU)
+            return vkCode is VK_MENU or VK_LMENU or VK_RMENU;
+
+        return vkCode == key;
     }
 
     private bool IsComboHeld(int modifiers, int key)

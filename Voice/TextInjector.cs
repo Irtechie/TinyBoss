@@ -7,14 +7,13 @@ namespace TinyBoss.Voice;
 
 /// <summary>
 /// Injects transcribed voice text into the target window.
-/// Priority: managed session stdin -> clipboard paste for long focused text -> SendInput keyboard simulation.
+/// Priority: managed session stdin -> clipboard paste for focused text -> SendInput keyboard simulation.
 /// </summary>
 [SupportedOSPlatform("windows")]
 public sealed class TextInjector
 {
     private readonly SessionRegistry _registry;
     private readonly ILogger<TextInjector> _logger;
-    private const int ClipboardPasteThresholdChars = 80;
     private const int ClipboardRestoreDelayMs = 1500;
     private const int ClipboardOpenAttempts = 24;
     private const int ClipboardOpenRetryDelayMs = 25;
@@ -168,12 +167,6 @@ public sealed class TextInjector
 
     private async Task<string> AppendViaFocusedWindowAsync(string text, CancellationToken ct)
     {
-        if (text.Length < ClipboardPasteThresholdChars)
-        {
-            TypeViaKeyboard(text, moveToEnd: true);
-            return "SendInput";
-        }
-
         var paste = TryPasteViaClipboard(text, moveToEnd: true);
         if (!paste.Success)
         {
