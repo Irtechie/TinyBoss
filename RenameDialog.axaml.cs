@@ -10,7 +10,11 @@ public partial class RenameDialog : Window
 
     public string? AliasResult { get; private set; }
 
-    public RenameDialog(string currentAlias = "")
+    public RenameDialog() : this("")
+    {
+    }
+
+    public RenameDialog(string currentAlias)
     {
         AvaloniaXamlLoader.Load(this);
 
