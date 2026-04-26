@@ -1,18 +1,20 @@
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
+using System.Text;
 using TinyBoss.Core;
 
 namespace TinyBoss.Voice;
 
 /// <summary>
 /// Injects transcribed voice text into the target window.
-/// Priority: managed session stdin → SendInput keyboard simulation (any focused window).
+/// Priority: managed session stdin -> clipboard paste for long focused text -> SendInput keyboard simulation.
 /// </summary>
 [SupportedOSPlatform("windows")]
 public sealed class TextInjector
 {
     private readonly SessionRegistry _registry;
     private readonly ILogger<TextInjector> _logger;
+    private const int ClipboardPasteThresholdChars = 80;
 
     public TextInjector(SessionRegistry registry, ILogger<TextInjector> logger)
     {
@@ -40,7 +42,7 @@ public sealed class TextInjector
             session = FindFocusedManagedSession();
             if (session is null)
             {
-                // Fallback: type into whatever window is focused via keyboard simulation
+                // Fallback: type into whatever window is focused via keyboard simulation.
                 TypeViaKeyboard(text);
                 _logger.LogInformation("KH: Voice typed {N} chars via SendInput into focused window", text.Length);
                 return (true, "Typed into focused window");
@@ -90,9 +92,9 @@ public sealed class TextInjector
 
         if (session is null)
         {
-            TypeViaKeyboard(text, moveToEnd: true);
-            _logger.LogInformation("KH: Voice appended {N} chars via SendInput into focused window", text.Length);
-            return (true, "Typed into focused window");
+            var method = await AppendViaFocusedWindowAsync(text, ct);
+            _logger.LogInformation("KH: Voice appended {N} chars via {Method} into focused window", text.Length, method);
+            return (true, $"Typed into focused window ({method})");
         }
 
         try
@@ -107,8 +109,8 @@ public sealed class TextInjector
         }
         catch (InvalidOperationException)
         {
-            TypeViaKeyboard(text, moveToEnd: true);
-            return (true, "Typed into focused window");
+            var method = await AppendViaFocusedWindowAsync(text, ct);
+            return (true, $"Typed into focused window ({method})");
         }
         catch (Exception ex)
         {
@@ -127,6 +129,7 @@ public sealed class TextInjector
             SendVirtualKey(VK_END);
 
         var inputs = new INPUT[2];
+        var sentChars = 0;
         foreach (char c in text)
         {
             // Key down
@@ -144,7 +147,58 @@ public sealed class TextInjector
                 dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP
             };
             SendInput(2, inputs, Marshal.SizeOf<INPUT>());
+            sentChars++;
+            if (sentChars % 64 == 0)
+                Thread.Sleep(2);
         }
+    }
+
+    private async Task<string> AppendViaFocusedWindowAsync(string text, CancellationToken ct)
+    {
+        if (text.Length < ClipboardPasteThresholdChars)
+        {
+            TypeViaKeyboard(text, moveToEnd: true);
+            return "SendInput";
+        }
+
+        if (!TryPasteViaClipboard(text, moveToEnd: true))
+        {
+            TypeViaKeyboard(text, moveToEnd: true);
+            return "SendInput";
+        }
+
+        await Task.Delay(250, ct);
+        return "clipboard";
+    }
+
+    private static bool TryPasteViaClipboard(string text, bool moveToEnd)
+    {
+        string? previousText = null;
+        var hadText = TryReadClipboardText(out previousText);
+        if (!hadText && CountClipboardFormats() > 0)
+            return false;
+
+        if (!TrySetClipboardText(text))
+        {
+            if (hadText)
+                TrySetClipboardText(previousText ?? string.Empty);
+            return false;
+        }
+
+        if (moveToEnd)
+            SendVirtualKey(VK_END);
+        SendPasteChord();
+
+        if (hadText)
+        {
+            _ = Task.Run(async () =>
+            {
+                await Task.Delay(500);
+                TrySetClipboardText(previousText ?? string.Empty);
+            });
+        }
+
+        return true;
     }
 
     private static void SendVirtualKey(ushort key)
@@ -153,6 +207,103 @@ public sealed class TextInjector
         inputs[0] = new INPUT { type = INPUT_KEYBOARD, wVk = key };
         inputs[1] = new INPUT { type = INPUT_KEYBOARD, wVk = key, dwFlags = KEYEVENTF_KEYUP };
         SendInput(2, inputs, Marshal.SizeOf<INPUT>());
+    }
+
+    private static void SendPasteChord()
+    {
+        var inputs = new INPUT[4];
+        inputs[0] = new INPUT { type = INPUT_KEYBOARD, wVk = VK_CONTROL };
+        inputs[1] = new INPUT { type = INPUT_KEYBOARD, wVk = VK_V };
+        inputs[2] = new INPUT { type = INPUT_KEYBOARD, wVk = VK_V, dwFlags = KEYEVENTF_KEYUP };
+        inputs[3] = new INPUT { type = INPUT_KEYBOARD, wVk = VK_CONTROL, dwFlags = KEYEVENTF_KEYUP };
+        SendInput(4, inputs, Marshal.SizeOf<INPUT>());
+    }
+
+    private static bool TryReadClipboardText(out string? text)
+    {
+        text = null;
+        if (!IsClipboardFormatAvailable(CF_UNICODETEXT))
+            return false;
+
+        if (!TryOpenClipboard())
+            return false;
+
+        nint handle = nint.Zero;
+        nint ptr = nint.Zero;
+        try
+        {
+            handle = GetClipboardData(CF_UNICODETEXT);
+            if (handle == nint.Zero)
+                return false;
+
+            ptr = GlobalLock(handle);
+            if (ptr == nint.Zero)
+                return false;
+
+            text = Marshal.PtrToStringUni(ptr);
+            return text is not null;
+        }
+        finally
+        {
+            if (ptr != nint.Zero)
+                GlobalUnlock(handle);
+            CloseClipboard();
+        }
+    }
+
+    private static bool TrySetClipboardText(string text)
+    {
+        if (!TryOpenClipboard())
+            return false;
+
+        nint handle = nint.Zero;
+        try
+        {
+            var bytes = Encoding.Unicode.GetBytes(text + "\0");
+            handle = GlobalAlloc(GMEM_MOVEABLE, (nuint)bytes.Length);
+            if (handle == nint.Zero)
+                return false;
+
+            var ptr = GlobalLock(handle);
+            if (ptr == nint.Zero)
+                return false;
+
+            try
+            {
+                Marshal.Copy(bytes, 0, ptr, bytes.Length);
+            }
+            finally
+            {
+                GlobalUnlock(handle);
+            }
+
+            if (!EmptyClipboard())
+                return false;
+
+            if (SetClipboardData(CF_UNICODETEXT, handle) == nint.Zero)
+                return false;
+
+            handle = nint.Zero; // Clipboard owns it now.
+            return true;
+        }
+        finally
+        {
+            if (handle != nint.Zero)
+                GlobalFree(handle);
+            CloseClipboard();
+        }
+    }
+
+    private static bool TryOpenClipboard()
+    {
+        for (var i = 0; i < 8; i++)
+        {
+            if (OpenClipboard(nint.Zero))
+                return true;
+            Thread.Sleep(25);
+        }
+
+        return false;
     }
 
     /// <summary>
@@ -193,6 +344,10 @@ public sealed class TextInjector
     private const uint KEYEVENTF_UNICODE = 0x0004;
     private const uint KEYEVENTF_KEYUP = 0x0002;
     private const ushort VK_END = 0x23;
+    private const ushort VK_CONTROL = 0x11;
+    private const ushort VK_V = 0x56;
+    private const uint CF_UNICODETEXT = 13;
+    private const uint GMEM_MOVEABLE = 0x0002;
 
     [StructLayout(LayoutKind.Explicit, Size = 40)]
     private struct INPUT
@@ -213,4 +368,37 @@ public sealed class TextInjector
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool OpenClipboard(nint hWndNewOwner);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool CloseClipboard();
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool EmptyClipboard();
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern nint SetClipboardData(uint uFormat, nint hMem);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern nint GetClipboardData(uint uFormat);
+
+    [DllImport("user32.dll")]
+    private static extern bool IsClipboardFormatAvailable(uint format);
+
+    [DllImport("user32.dll")]
+    private static extern int CountClipboardFormats();
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern nint GlobalAlloc(uint uFlags, nuint dwBytes);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern nint GlobalLock(nint hMem);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GlobalUnlock(nint hMem);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern nint GlobalFree(nint hMem);
 }
