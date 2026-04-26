@@ -301,6 +301,8 @@ public sealed class SpawnHandler
                 "inferno",
                 "claude.exe",
                 "claude",
+                "qwen.exe",
+                "qwen",
             };
             Directory.CreateDirectory(Path.GetDirectoryName(AllowlistPath)!);
             File.WriteAllLines(AllowlistPath, defaults);

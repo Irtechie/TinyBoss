@@ -26,6 +26,9 @@ public class App : Application
     // Tiling state
     private nint _currentMonitor;
     private Dictionary<int, RECT>? _currentPaneBounds;
+    private PageMoveContext? _pageMove;
+
+    private sealed record PageMoveContext(string SourceDevice, nint SourceMonitor, nint Hwnd);
 
     public override void Initialize()
     {
@@ -70,6 +73,8 @@ public class App : Application
             // Override Windows Snap Layouts if configured (restart Explorer once to apply)
             if (_config.OverrideSnapLayouts)
                 SnapLayoutControl.DisableSnapLayouts(restartExplorer: false);
+
+            RunTerminalCollection("startup");
 
             // First-run: show settings for mic selection
             CheckFirstRun();
@@ -168,7 +173,7 @@ public class App : Application
         menu.Add(new NativeMenuItemSeparator());
 
         // Tiling actions
-        var tileItem = new NativeMenuItem($"📐 Tile Windows (auto {_tiling?.GridSize ?? 0}-pane)");
+        var tileItem = new NativeMenuItem("📐 Tile Windows");
         tileItem.Click += (_, _) => OnTileKeyPressed();
         menu.Add(tileItem);
 
@@ -180,20 +185,26 @@ public class App : Application
 
         // Tiled windows — rename entries (prune dead windows first)
         _tiling?.PruneDeadWindows();
-        var tiledSnapshot = _tiling?.GetSnapshot() ?? new Dictionary<int, TileSlot>();
-        if (tiledSnapshot.Count > 0)
+        var tiledSnapshots = _tiling?.GetAllSnapshots() ?? [];
+        if (tiledSnapshots.Count > 0)
         {
-            foreach (var (slot, ts) in tiledSnapshot.OrderBy(kv => kv.Key))
+            foreach (var grid in tiledSnapshots)
             {
-                var title = TilingCoordinator.GetWindowTitle(ts.Hwnd);
-                var displayName = ts.Alias
-                    ?? (string.IsNullOrWhiteSpace(title) ? $"Window (slot {slot + 1})" : title);
-                if (displayName.Length > 40)
-                    displayName = displayName[..37] + "…";
-                var capturedSlot = slot;
-                var renameItem = new NativeMenuItem($"✏️ {displayName}");
-                renameItem.Click += (_, _) => ShowRenameDialog(capturedSlot, ts.Alias ?? "");
-                menu.Add(renameItem);
+                var header = new NativeMenuItem($"Screen {grid.DeviceName}") { IsEnabled = false };
+                menu.Add(header);
+                foreach (var (slot, ts) in grid.Slots.OrderBy(kv => kv.Key))
+                {
+                    var title = TilingCoordinator.GetWindowTitle(ts.Hwnd);
+                    var displayName = ts.Alias
+                        ?? (string.IsNullOrWhiteSpace(title) ? $"Window (slot {slot + 1})" : title);
+                    if (displayName.Length > 40)
+                        displayName = displayName[..37] + "…";
+                    var capturedSlot = slot;
+                    var capturedMonitor = grid.MonitorHandle;
+                    var renameItem = new NativeMenuItem($"✏️ {displayName}");
+                    renameItem.Click += (_, _) => ShowRenameDialog(capturedMonitor, capturedSlot, ts.Alias ?? "");
+                    menu.Add(renameItem);
+                }
             }
             menu.Add(new NativeMenuItemSeparator());
         }
@@ -266,7 +277,9 @@ public class App : Application
         var info = new MONITORINFO { cbSize = (uint)System.Runtime.InteropServices.Marshal.SizeOf<MONITORINFO>() };
         TilingCoordinator.GetMonitorInfo(_currentMonitor, ref info);
 
-        var gridSize = _tiling?.GridSize ?? 1;
+        RunTerminalCollection("overlay");
+
+        var gridSize = _tiling?.GetGridSize(_currentMonitor) ?? 1;
         var layout = _config?.GridLayout ?? "2x3";
         _currentPaneBounds = TilingCoordinator.GetPaneBounds(_currentMonitor, gridSize, layout);
 
@@ -274,7 +287,7 @@ public class App : Application
         _overlay.SetLayout(layout);
         _overlay.SetMonitorBounds(info.rcWork, info.rcMonitor);
         _overlay.SetGridSize(gridSize);
-        var snapshot = _tiling?.GetSnapshot() ?? new Dictionary<int, TileSlot>();
+        var snapshot = _tiling?.GetSnapshot(_currentMonitor) ?? new Dictionary<int, TileSlot>();
         var aliases = snapshot.Where(kv => kv.Value.Alias is not null)
             .ToDictionary(kv => kv.Key, kv => kv.Value.Alias!);
         _overlay.SetOccupiedSlots(new HashSet<int>(snapshot.Keys), aliases);
@@ -282,9 +295,9 @@ public class App : Application
         _overlay.DismissRequested += () => Dispatcher.UIThread.Post(DismissOverlay);
         _overlay.RenameRequested += slot =>
         {
-            var snap = _tiling?.GetSnapshot();
+            var snap = _tiling?.GetSnapshot(_currentMonitor);
             var currentAlias = snap?.TryGetValue(slot, out var ts) == true ? ts.Alias ?? "" : "";
-            ShowRenameDialog(slot, currentAlias);
+            ShowRenameDialog(_currentMonitor, slot, currentAlias);
         };
         _overlay.Show();
         // Hotkey-triggered: make interactive (accept clicks for rename/dismiss)
@@ -298,6 +311,19 @@ public class App : Application
         _overlay?.Close();
         _overlay = null;
         _currentPaneBounds = null;
+    }
+
+    private void RunTerminalCollection(string trigger)
+    {
+        try
+        {
+            var assigned = _tiling?.CollectVisibleTerminals(_config?.EnabledMonitors, trigger) ?? 0;
+            Diag($"TERMINAL_COLLECT_APP trigger={trigger} assigned={assigned}");
+        }
+        catch (Exception ex)
+        {
+            Diag($"TERMINAL_COLLECT_APP_ERROR trigger={trigger}: {ex.Message}\n{ex.StackTrace}");
+        }
     }
 
     // ── Diagnostic log ─────────────────────────────────────────────────────
@@ -320,36 +346,62 @@ public class App : Application
     {
         _dragHwnd = hwnd;
         _dragOverlayActive = false;
+        _pageMove = null;
 
-        var isTerminal = TerminalDetector.IsTerminalWindow(hwnd);
-        Diag($"DRAG_START hwnd=0x{hwnd:X} isTerminal={isTerminal}");
-
-        if (!isTerminal) return;
-
-        // Prune dead windows so grid size reflects reality
-        var pruned = _tiling?.PruneDeadWindows() ?? false;
-        var slotBefore = _tiling?.FindSlotForHwnd(hwnd) ?? -1;
-        Diag($"  pruned={pruned} existingSlot={slotBefore} occupiedBefore={_tiling?.OccupiedCount}");
-
-        // If this window is already tiled, remove from slot data only.
-        // Do NOT rebalance here — SetWindowPos during drag kills the move operation.
-        // Reflow happens at drag end.
-        _tiling?.RemoveWindow(hwnd);
-        Diag($"  occupiedAfterRemove={_tiling?.OccupiedCount}");
-
-        // Always activate drag tracking for terminals — overlay will appear
-        // when cursor reaches any enabled monitor (via OnDragMoved).
-        var monitor = TilingCoordinator.GetMonitorAtCursor();
-        var enabled = IsMonitorEnabled(monitor);
-        Diag($"  monitor=0x{monitor:X} enabled={enabled}");
-
-        _dragOverlayActive = true;
-
-        if (enabled)
+        try
         {
-            Dispatcher.UIThread.Post(() => ShowDragOverlay(monitor));
+            var isTerminal = TerminalDetector.IsTerminalWindow(hwnd);
+            Diag($"DRAG_START hwnd=0x{hwnd:X} isTerminal={isTerminal}");
+
+            if (!isTerminal) return;
+            _tiling?.OnDragStarted();
+
+            // Prune dead windows so grid size reflects reality
+            var pruned = _tiling?.PruneDeadWindows() ?? false;
+            var location = _tiling?.FindLocationForHwnd(hwnd);
+            var slotBefore = location?.Slot ?? -1;
+            Diag($"  pruned={pruned} existingSlot={slotBefore} source={location?.DeviceName ?? ""}");
+
+            var movePageHeld = _hotkeys?.IsMovePageHeld == true;
+            if (movePageHeld && location is not null)
+            {
+                _pageMove = new PageMoveContext(location.DeviceName, location.MonitorHandle, hwnd);
+                _dragOverlayActive = true;
+                var moveMonitor = TilingCoordinator.GetMonitorAtCursor();
+                var moveEnabled = IsMonitorEnabled(moveMonitor);
+                Diag($"  pageMove source={location.DeviceName} monitor=0x{moveMonitor:X} enabled={moveEnabled}");
+                if (moveEnabled)
+                    Dispatcher.UIThread.Post(() => ShowDragOverlay(moveMonitor));
+                return;
+            }
+
+            // If this window is already tiled, remove from slot data only.
+            // Do NOT rebalance here — SetWindowPos during drag kills the move operation.
+            // Reflow happens at drag end.
+            _tiling?.RemoveWindow(hwnd);
+            Diag($"  occupiedAfterRemove source={location?.DeviceName ?? ""}");
+
+            // Always activate drag tracking for terminals — overlay will appear
+            // when cursor reaches any enabled monitor (via OnDragMoved).
+            var monitor = TilingCoordinator.GetMonitorAtCursor();
+            var enabled = IsMonitorEnabled(monitor);
+            Diag($"  monitor=0x{monitor:X} enabled={enabled}");
+
+            _dragOverlayActive = true;
+
+            if (enabled)
+            {
+                Dispatcher.UIThread.Post(() => ShowDragOverlay(monitor));
+            }
+            // If not enabled, overlay will show when cursor moves to an enabled monitor
         }
-        // If not enabled, overlay will show when cursor moves to an enabled monitor
+        catch (Exception ex)
+        {
+            Diag($"DRAG_START_ERROR: {ex.Message}\n{ex.StackTrace}");
+            _dragOverlayActive = false;
+            _dragHwnd = nint.Zero;
+            _pageMove = null;
+        }
     }
 
     /// <summary>Shows click-through overlay during drag (non-interactive).</summary>
@@ -361,164 +413,213 @@ public class App : Application
         var info = new MONITORINFO { cbSize = (uint)System.Runtime.InteropServices.Marshal.SizeOf<MONITORINFO>() };
         TilingCoordinator.GetMonitorInfo(monitor, ref info);
 
-        // If this is a different monitor than where tiles currently live, treat as empty
         var activeMonitor = _tiling?.ActiveMonitor ?? nint.Zero;
-        var isDifferentMonitor = activeMonitor != nint.Zero && monitor != activeMonitor && (_tiling?.OccupiedCount ?? 0) > 0;
-        var gridSize = isDifferentMonitor ? 1 : (_tiling?.GridSizeForNextWindow ?? 1);
+        var gridSize = _pageMove is not null
+            ? (_tiling?.GetGridSize(monitor) ?? 1)
+            : (_tiling?.GetGridSizeForNextWindow(monitor) ?? 1);
         var layout = _config?.GridLayout ?? "2x3";
         _currentPaneBounds = TilingCoordinator.GetPaneBounds(monitor, gridSize, layout);
 
-        Diag($"SHOW_OVERLAY mon=0x{monitor:X} activeMon=0x{activeMonitor:X} diffMon={isDifferentMonitor} grid={gridSize} occupied={_tiling?.OccupiedCount}");
+        Diag($"SHOW_OVERLAY mon=0x{monitor:X} activeMon=0x{activeMonitor:X} pageMove={_pageMove is not null} grid={gridSize} occupied={_tiling?.GetOccupiedCount(monitor)}");
 
         _overlay = new TileOverlay();
         _overlay.SetLayout(layout);
         _overlay.SetMonitorBounds(info.rcWork, info.rcMonitor);
         _overlay.SetGridSize(gridSize);
 
-        // Don't show occupied slots from other monitor
-        var snapshot = isDifferentMonitor
-            ? new Dictionary<int, TileSlot>()
-            : (_tiling?.GetSnapshot() ?? new Dictionary<int, TileSlot>());
+        var snapshot = _tiling?.GetSnapshot(monitor) ?? new Dictionary<int, TileSlot>();
         var aliases = snapshot.Where(kv => kv.Value.Alias is not null)
             .ToDictionary(kv => kv.Key, kv => kv.Value.Alias!);
         _overlay.SetOccupiedSlots(new HashSet<int>(snapshot.Keys), aliases);
 
         _overlay.DismissRequested += () => Dispatcher.UIThread.Post(DismissOverlay);
         _overlay.Show();
+
+        // Re-snap existing tiled windows on this monitor (recovery from drift/corruption)
+        if (_pageMove is null && _tiling is not null && _tiling.GetOccupiedCount(monitor) > 0)
+        {
+            try { _tiling.PositionAll(monitor); }
+            catch (Exception ex) { Diag($"RESNAP_ERROR: {ex.Message}"); }
+        }
     }
 
     private void OnDragMoved(int screenX, int screenY)
     {
         if (!_dragOverlayActive) return;
 
-        var monitor = TilingCoordinator.GetMonitorAtPoint(screenX, screenY);
-        if (monitor == nint.Zero || !IsMonitorEnabled(monitor)) return;
-
-        // No overlay yet (started on disabled monitor) — create it now
-        if (_overlay is null)
+        try
         {
-            Diag($"DRAG_MOVED late_overlay on=0x{monitor:X}");
-            Dispatcher.UIThread.Post(() => ShowDragOverlay(monitor));
-            return;
-        }
+            var monitor = TilingCoordinator.GetMonitorAtPoint(screenX, screenY);
+            if (monitor == nint.Zero || !IsMonitorEnabled(monitor)) return;
 
-        // If dragged to a different enabled monitor, move the overlay
-        if (monitor != _currentMonitor)
-        {
-            Diag($"DRAG_MOVED monitor_change from=0x{_currentMonitor:X} to=0x{monitor:X}");
-            Dispatcher.UIThread.Post(() =>
+            // No overlay yet (started on disabled monitor) — create it now
+            if (_overlay is null)
             {
-                DismissOverlay();
-                ShowDragOverlay(monitor);
-            });
-            return;
-        }
+                Diag($"DRAG_MOVED late_overlay on=0x{monitor:X}");
+                Dispatcher.UIThread.Post(() => ShowDragOverlay(monitor));
+                return;
+            }
 
-        var slot = TilingCoordinator.HitTestSlot(screenX, screenY, _currentPaneBounds);
-        Dispatcher.UIThread.Post(() => _overlay?.HighlightZone(slot));
+            // If dragged to a different enabled monitor, move the overlay
+            if (monitor != _currentMonitor)
+            {
+                Diag($"DRAG_MOVED monitor_change from=0x{_currentMonitor:X} to=0x{monitor:X}");
+                Dispatcher.UIThread.Post(() =>
+                {
+                    DismissOverlay();
+                    ShowDragOverlay(monitor);
+                });
+                return;
+            }
+
+            var slot = TilingCoordinator.HitTestSlot(screenX, screenY, _currentPaneBounds);
+            Dispatcher.UIThread.Post(() => _overlay?.HighlightZone(slot));
+        }
+        catch (Exception ex)
+        {
+            Diag($"DRAG_MOVED_ERROR: {ex.Message}");
+        }
     }
 
     private void OnDragEnded(nint hwnd, int screenX, int screenY)
     {
         var wasActive = _dragOverlayActive;
+        var pageMove = _pageMove;
         _dragHwnd = nint.Zero;
         _dragOverlayActive = false;
+        _pageMove = null;
 
-        Diag($"DRAG_END hwnd=0x{hwnd:X} pos=({screenX},{screenY}) wasActive={wasActive} hasOverlay={_overlay is not null} hasBounds={_currentPaneBounds is not null}");
+        Diag($"DRAG_END hwnd=0x{hwnd:X} pos=({screenX},{screenY}) wasActive={wasActive} pageMove={pageMove is not null} hasOverlay={_overlay is not null} hasBounds={_currentPaneBounds is not null}");
 
-        if (!wasActive || _overlay is null || _currentPaneBounds is null)
+        try
         {
-            Diag($"  early exit — rebalance remaining={_tiling?.OccupiedCount}");
-            // Overlay wasn't shown — rebalance remaining (window removed at drag start)
-            if (_tiling is not null && _tiling.OccupiedCount > 0)
+            if (pageMove is not null)
             {
-                var tilingMonitor = _tiling.ActiveMonitor;
-                if (tilingMonitor != nint.Zero)
-                    _tiling.Rebalance(tilingMonitor);
+                HandlePageMoveDrop(pageMove, screenX, screenY);
+                return;
             }
-            Dispatcher.UIThread.Post(DismissOverlay);
-            return;
-        }
 
-        var slot = TilingCoordinator.HitTestSlot(screenX, screenY, _currentPaneBounds);
-        Diag($"  hitTest slot={slot} currentMon=0x{_currentMonitor:X} activeMon=0x{(_tiling?.ActiveMonitor ?? 0):X} occupied={_tiling?.OccupiedCount}");
-
-        if (slot >= 0 && _tiling is not null)
-        {
-            var originalMonitor = _tiling.ActiveMonitor;
-            var droppedOnDifferentMonitor = originalMonitor != nint.Zero
-                && _currentMonitor != originalMonitor
-                && _tiling.OccupiedCount > 0;
-
-            Diag($"  diffMon={droppedOnDifferentMonitor} origMon=0x{originalMonitor:X}");
-
-            if (droppedOnDifferentMonitor)
+            if (!wasActive || _overlay is null || _currentPaneBounds is null)
             {
-                _tiling.Rebalance(originalMonitor);
-                var targetInfo = new MONITORINFO { cbSize = (uint)System.Runtime.InteropServices.Marshal.SizeOf<MONITORINFO>() };
-                TilingCoordinator.GetMonitorInfo(_currentMonitor, ref targetInfo);
-                var wa = targetInfo.rcWork;
-                Diag($"  cross-mon snap to wa=({wa.Left},{wa.Top},{wa.Right},{wa.Bottom})");
-                TilingCoordinator.SetWindowPos(hwnd, nint.Zero,
-                    wa.Left, wa.Top, wa.Right - wa.Left, wa.Bottom - wa.Top,
-                    0x0010 | 0x0004 | 0x0040);
+                Diag($"  early exit - rebalance remaining={_tiling?.GetOccupiedCount(_currentMonitor)}");
+                _tiling?.RestoreDetachedWindow(hwnd);
+                if (_tiling is not null && _currentMonitor != nint.Zero && _tiling.GetOccupiedCount(_currentMonitor) > 0)
+                    _tiling.Rebalance(_currentMonitor);
                 Dispatcher.UIThread.Post(DismissOverlay);
                 return;
             }
 
-            var slotOccupied = _tiling.IsSlotOccupied(slot);
-            Diag($"  slotOccupied={slotOccupied}");
-            if (slotOccupied)
+            var slot = TilingCoordinator.HitTestSlot(screenX, screenY, _currentPaneBounds);
+            Diag($"  hitTest slot={slot} currentMon=0x{_currentMonitor:X} occupied={_tiling?.GetOccupiedCount(_currentMonitor)}");
+
+            if (slot >= 0 && _tiling is not null)
             {
-                var empty = _tiling.FindNextEmptySlot();
-                Diag($"  redirect to empty={empty}");
-                if (empty < 0)
+                var slotOccupied = _tiling.IsSlotOccupied(_currentMonitor, slot);
+                Diag($"  slotOccupied={slotOccupied}");
+                if (slotOccupied)
                 {
-                    Dispatcher.UIThread.Post(DismissOverlay);
-                    return;
+                    var empty = _tiling.FindNextEmptySlot(_currentMonitor, _tiling.GetGridSizeForNextWindow(_currentMonitor));
+                    Diag($"  redirect to empty={empty}");
+                    if (empty < 0)
+                    {
+                        _tiling.RestoreDetachedWindow(hwnd);
+                        Dispatcher.UIThread.Post(DismissOverlay);
+                        return;
+                    }
+                    slot = empty;
                 }
-                slot = empty;
+
+                string? sessionId = null;
+                if (_registry is not null)
+                {
+                    TilingCoordinator.GetWindowThreadProcessId(hwnd, out int pid);
+                    var session = _registry.GetSnapshot().FirstOrDefault(s => s.Process.Id == pid);
+                    sessionId = session?.SessionId;
+                }
+
+                _tiling.AssignToSlot(slot, hwnd, _currentMonitor, sessionId);
+                Diag($"  ASSIGNED slot={slot} mon=0x{_currentMonitor:X} gridSize={_tiling.GetGridSize(_currentMonitor)} total={_tiling.GetOccupiedCount(_currentMonitor)}");
+                _tiling.PositionAll(_currentMonitor);
+
+                Dispatcher.UIThread.Post(() => RefreshOverlayThenDismiss(_currentMonitor));
             }
-
-            string? sessionId = null;
-            if (_registry is not null)
+            else
             {
-                TilingCoordinator.GetWindowThreadProcessId(hwnd, out int pid);
-                var session = _registry.GetSnapshot().FirstOrDefault(s => s.Process.Id == pid);
-                sessionId = session?.SessionId;
+                Diag($"  no slot - rebalance remaining={_tiling?.GetOccupiedCount(_currentMonitor)}");
+                _tiling?.RestoreDetachedWindow(hwnd);
+                if (_tiling is not null && _currentMonitor != nint.Zero && _tiling.GetOccupiedCount(_currentMonitor) > 0)
+                    _tiling.Rebalance(_currentMonitor);
+                Dispatcher.UIThread.Post(DismissOverlay);
             }
-
-            _tiling.AssignToSlot(slot, hwnd, sessionId);
-            Diag($"  ASSIGNED slot={slot} gridSize={_tiling.GridSize} total={_tiling.OccupiedCount}");
-            _tiling.PositionAll(_currentMonitor);
-
-            Dispatcher.UIThread.Post(() =>
-            {
-                var snapshot = _tiling.GetSnapshot();
-                var gridSize = _tiling.GridSize;
-                _overlay?.SetGridSize(gridSize);
-                var aliases = snapshot.Where(kv => kv.Value.Alias is not null)
-                    .ToDictionary(kv => kv.Key, kv => kv.Value.Alias!);
-                _overlay?.SetOccupiedSlots(new HashSet<int>(snapshot.Keys), aliases);
-                _overlay?.HighlightZone(-1);
-                _currentPaneBounds = TilingCoordinator.GetPaneBounds(_currentMonitor, gridSize, _config?.GridLayout ?? "2x3");
-
-                // Brief flash then dismiss
-                Task.Delay(400).ContinueWith(_ => Dispatcher.UIThread.Post(DismissOverlay));
-            });
         }
-        else
+        catch (Exception ex)
         {
-            Diag($"  no slot — rebalance remaining={_tiling?.OccupiedCount}");
-            // Window dropped outside any tile zone — rebalance remaining windows
-            if (_tiling is not null && _tiling.OccupiedCount > 0)
-            {
-                var tilingMonitor = _tiling.ActiveMonitor;
-                if (tilingMonitor != nint.Zero)
-                    _tiling.Rebalance(tilingMonitor);
-            }
+            Diag($"DRAG_END_ERROR: {ex.Message}\n{ex.StackTrace}");
             Dispatcher.UIThread.Post(DismissOverlay);
         }
+        finally
+        {
+            var endMonitor = _currentMonitor != nint.Zero ? _currentMonitor : pageMove?.SourceMonitor ?? nint.Zero;
+            _tiling?.OnDragEnded(endMonitor);
+        }
+    }
+
+    private void HandlePageMoveDrop(PageMoveContext pageMove, int screenX, int screenY)
+    {
+        if (_tiling is null)
+        {
+            Dispatcher.UIThread.Post(DismissOverlay);
+            return;
+        }
+
+        var targetMonitor = TilingCoordinator.GetMonitorAtPoint(screenX, screenY);
+        var targetEnabled = targetMonitor != nint.Zero && IsMonitorEnabled(targetMonitor);
+        Diag($"  pageMove target=0x{targetMonitor:X} enabled={targetEnabled}");
+
+        if (!targetEnabled)
+        {
+            _tiling.Rebalance(pageMove.SourceMonitor);
+            Dispatcher.UIThread.Post(DismissOverlay);
+            return;
+        }
+
+        var targetDevice = _tiling.GetDeviceName(targetMonitor);
+        if (string.IsNullOrWhiteSpace(targetDevice))
+        {
+            _tiling.Rebalance(pageMove.SourceMonitor);
+            Dispatcher.UIThread.Post(DismissOverlay);
+            return;
+        }
+
+        if (string.Equals(targetDevice, pageMove.SourceDevice, StringComparison.OrdinalIgnoreCase))
+        {
+            _tiling.Rebalance(pageMove.SourceMonitor);
+            Dispatcher.UIThread.Post(() => RefreshOverlayThenDismiss(targetMonitor));
+            return;
+        }
+
+        var moved = _tiling.MovePage(pageMove.SourceDevice, targetDevice);
+        Diag($"  pageMove complete source={pageMove.SourceDevice} target={targetDevice} moved={moved}");
+        Dispatcher.UIThread.Post(() => RefreshOverlayThenDismiss(targetMonitor));
+    }
+
+    private void RefreshOverlayThenDismiss(nint monitor)
+    {
+        if (_tiling is null)
+        {
+            DismissOverlay();
+            return;
+        }
+
+        var snapshot = _tiling.GetSnapshot(monitor);
+        var gridSize = _tiling.GetGridSize(monitor);
+        _overlay?.SetGridSize(gridSize);
+        var aliases = snapshot.Where(kv => kv.Value.Alias is not null)
+            .ToDictionary(kv => kv.Key, kv => kv.Value.Alias!);
+        _overlay?.SetOccupiedSlots(new HashSet<int>(snapshot.Keys), aliases);
+        _overlay?.HighlightZone(-1);
+        _currentPaneBounds = TilingCoordinator.GetPaneBounds(monitor, gridSize, _config?.GridLayout ?? "2x3");
+        Task.Delay(400).ContinueWith(_ => Dispatcher.UIThread.Post(DismissOverlay));
     }
 
     // ── Settings (Phase 4) ─────────────────────────────────────────────────
@@ -548,7 +649,7 @@ public class App : Application
         RebuildTrayMenu();
     }
 
-    private void ShowRenameDialog(int slot, string currentAlias)
+    private void ShowRenameDialog(nint monitorHandle, int slot, string currentAlias)
     {
         Dispatcher.UIThread.Post(async () =>
         {
@@ -557,7 +658,7 @@ public class App : Application
             {
                 if (dialog.AliasResult is { } alias && _tiling is not null)
                 {
-                    _tiling.RenameSlot(slot, alias);
+                    _tiling.RenameSlot(monitorHandle, slot, alias);
                 }
             };
             dialog.Show();

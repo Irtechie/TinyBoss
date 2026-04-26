@@ -81,7 +81,9 @@ public sealed class HallucinationGuard
         if (noSpeechProb > 0.4f)
             return false;
 
-        if (probability < 0.3f)
+        // Whisper.net Probability is avg log-prob: 0.0 = max confidence, negative = less.
+        // Reject only very poor confidence (< -1.0).
+        if (probability < -1.0f)
             return false;
 
         if (KnownHallucinations.Contains(trimmed))

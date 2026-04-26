@@ -14,6 +14,7 @@ public partial class SettingsWindow : Window
     private readonly TinyBossConfig _config;
     private readonly ComboBox _voiceHotkeyCombo;
     private readonly ComboBox _tileHotkeyCombo;
+    private readonly ComboBox _movePageHotkeyCombo;
     private readonly ComboBox _micCombo;
     private readonly ComboBox _gridLayoutCombo;
     private readonly StackPanel _monitorList;
@@ -36,6 +37,13 @@ public partial class SettingsWindow : Window
         new("Win + `", 0x0008, 0xC0),
     ];
 
+    private static readonly HotkeyPreset[] MovePagePresets =
+    [
+        new("Ctrl+Shift+M", 0x0006, 0x4D),
+        new("Ctrl+Alt+M", 0x0003, 0x4D),
+        new("Win + M", 0x0008, 0x4D),
+    ];
+
     public SettingsWindow() : this(new TinyBossConfig()) { }
 
     public SettingsWindow(TinyBossConfig config)
@@ -45,6 +53,7 @@ public partial class SettingsWindow : Window
 
         _voiceHotkeyCombo = this.FindControl<ComboBox>("VoiceHotkeyCombo")!;
         _tileHotkeyCombo = this.FindControl<ComboBox>("TileHotkeyCombo")!;
+        _movePageHotkeyCombo = this.FindControl<ComboBox>("MovePageHotkeyCombo")!;
         _micCombo = this.FindControl<ComboBox>("MicCombo")!;
         _gridLayoutCombo = this.FindControl<ComboBox>("GridLayoutCombo")!;
         _monitorList = this.FindControl<StackPanel>("MonitorList")!;
@@ -59,6 +68,7 @@ public partial class SettingsWindow : Window
 
         _voiceHotkeyCombo.SelectionChanged += (_, _) => CheckConflicts();
         _tileHotkeyCombo.SelectionChanged += (_, _) => CheckConflicts();
+        _movePageHotkeyCombo.SelectionChanged += (_, _) => CheckConflicts();
         _gridLayoutCombo.SelectionChanged += OnGridLayoutChanged;
 
         LoadCurrentSettings();
@@ -74,6 +84,9 @@ public partial class SettingsWindow : Window
 
         // Tile hotkey presets
         PopulatePresets(_tileHotkeyCombo, TilePresets, _config.TileModifiers, _config.TileKey);
+
+        // Move-page hotkey presets
+        PopulatePresets(_movePageHotkeyCombo, MovePagePresets, _config.MovePageModifiers, _config.MovePageKey);
 
         // Microphone enumeration
         _micCombo.Items.Clear();
@@ -177,10 +190,10 @@ public partial class SettingsWindow : Window
     {
         var voice = GetSelectedPreset(_voiceHotkeyCombo);
         var tile = GetSelectedPreset(_tileHotkeyCombo);
-        if (voice is not null && tile is not null &&
-            voice.Modifiers == tile.Modifiers && voice.Key == tile.Key)
+        var movePage = GetSelectedPreset(_movePageHotkeyCombo);
+        if (HasHotkeyConflict(voice, tile, movePage))
         {
-            _conflictWarning.Text = "⚠ Voice and Tile hotkeys cannot be the same.";
+            _conflictWarning.Text = "⚠ Voice, Tile, and Move Page hotkeys cannot be the same.";
             _conflictWarning.IsVisible = true;
         }
         else
@@ -194,15 +207,23 @@ public partial class SettingsWindow : Window
         return (combo.SelectedItem as ComboBoxItem)?.Tag as HotkeyPreset;
     }
 
+    public static bool HasHotkeyConflict(params HotkeyPreset?[] presets)
+    {
+        var selected = presets.Where(p => p is not null).Cast<HotkeyPreset>().ToArray();
+        return selected
+            .GroupBy(p => (p.Modifiers, p.Key))
+            .Any(g => g.Count() > 1);
+    }
+
     private void OnSaveClick(object? sender, RoutedEventArgs e)
     {
         // Check for conflicts
         var voice = GetSelectedPreset(_voiceHotkeyCombo);
         var tile = GetSelectedPreset(_tileHotkeyCombo);
-        if (voice is not null && tile is not null &&
-            voice.Modifiers == tile.Modifiers && voice.Key == tile.Key)
+        var movePage = GetSelectedPreset(_movePageHotkeyCombo);
+        if (HasHotkeyConflict(voice, tile, movePage))
         {
-            _conflictWarning.Text = "⚠ Voice and Tile hotkeys cannot be the same. Pick different keys.";
+            _conflictWarning.Text = "⚠ Voice, Tile, and Move Page hotkeys cannot be the same. Pick different keys.";
             _conflictWarning.IsVisible = true;
             return;
         }
@@ -219,6 +240,13 @@ public partial class SettingsWindow : Window
         {
             _config.TileModifiers = tile.Modifiers;
             _config.TileKey = tile.Key;
+        }
+
+        // Move-page hotkey
+        if (movePage is not null)
+        {
+            _config.MovePageModifiers = movePage.Modifiers;
+            _config.MovePageKey = movePage.Key;
         }
 
         // Microphone

@@ -16,9 +16,13 @@ public sealed class HotKeyListener : IDisposable
     private const int MOD_CONTROL = 0x0002;
     private const int MOD_SHIFT = 0x0004;
     private const int MOD_ALT = 0x0001;
+    private const int MOD_WIN = 0x0008;
     private const int VK_CONTROL = 0x11;
     private const int VK_SHIFT = 0x10;
     private const int VK_MENU = 0x12;  // Generic Alt
+    private const int VK_LWIN = 0x5B;
+    private const int VK_RWIN = 0x5C;
+    private const int VOICE_RELEASE_DEBOUNCE_POLLS = 5;
 
     // Hotkey IDs
     public const int HOTKEY_TILE = 2;
@@ -54,6 +58,11 @@ public sealed class HotKeyListener : IDisposable
         _config = config;
         _logger = logger;
     }
+
+    public int VoiceKeyConfig => _config.VoiceKey;
+    public int VoiceModConfig => _config.VoiceModifiers;
+
+    public bool IsMovePageHeld => IsComboHeld(_config.MovePageModifiers, _config.MovePageKey);
 
     /// <summary>Tell the listener overlay is visible so it polls Tab/Escape.</summary>
     public void SetOverlayActive(bool active) => _overlayActive = active;
@@ -91,6 +100,7 @@ public sealed class HotKeyListener : IDisposable
         RegisterHotKeyWithLog(HOTKEY_REBALANCE, lastRebalMods | MOD_NOREPEAT, lastRebalKey, "Rebalance");
 
         var voiceDown = false;
+        var voiceReleaseMisses = 0;
         var escWasDown = false;
 
         while (!_disposed)
@@ -152,16 +162,26 @@ public sealed class HotKeyListener : IDisposable
             }
 
             // Poll voice push-to-talk (reads config dynamically — no re-register needed)
-            bool voiceHeld = IsVoiceComboHeld();
+            bool voiceHeld = IsComboHeld(_config.VoiceModifiers, _config.VoiceKey);
             if (voiceHeld && !voiceDown)
             {
                 voiceDown = true;
+                voiceReleaseMisses = 0;
                 VoiceKeyDown?.Invoke();
             }
             else if (!voiceHeld && voiceDown)
             {
-                voiceDown = false;
-                VoiceKeyUp?.Invoke();
+                voiceReleaseMisses++;
+                if (voiceReleaseMisses >= VOICE_RELEASE_DEBOUNCE_POLLS)
+                {
+                    voiceDown = false;
+                    voiceReleaseMisses = 0;
+                    VoiceKeyUp?.Invoke();
+                }
+            }
+            else if (voiceHeld)
+            {
+                voiceReleaseMisses = 0;
             }
 
             // Poll for Escape when overlay is active
@@ -185,12 +205,15 @@ public sealed class HotKeyListener : IDisposable
         DestroyWindow(_hwnd);
     }
 
-    private bool IsVoiceComboHeld()
+    private bool IsComboHeld(int modifiers, int key)
     {
-        if ((GetAsyncKeyState(_config.VoiceKey) & 0x8000) == 0) return false;
-        if ((_config.VoiceModifiers & MOD_CONTROL) != 0 && (GetAsyncKeyState(VK_CONTROL) & 0x8000) == 0) return false;
-        if ((_config.VoiceModifiers & MOD_SHIFT) != 0 && (GetAsyncKeyState(VK_SHIFT) & 0x8000) == 0) return false;
-        if ((_config.VoiceModifiers & MOD_ALT) != 0 && (GetAsyncKeyState(VK_MENU) & 0x8000) == 0) return false;
+        if ((GetAsyncKeyState(key) & 0x8000) == 0) return false;
+        if ((modifiers & MOD_CONTROL) != 0 && (GetAsyncKeyState(VK_CONTROL) & 0x8000) == 0) return false;
+        if ((modifiers & MOD_SHIFT) != 0 && (GetAsyncKeyState(VK_SHIFT) & 0x8000) == 0) return false;
+        if ((modifiers & MOD_ALT) != 0 && (GetAsyncKeyState(VK_MENU) & 0x8000) == 0) return false;
+        if ((modifiers & MOD_WIN) != 0 &&
+            (GetAsyncKeyState(VK_LWIN) & 0x8000) == 0 &&
+            (GetAsyncKeyState(VK_RWIN) & 0x8000) == 0) return false;
         return true;
     }
 

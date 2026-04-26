@@ -27,8 +27,30 @@ public sealed class WhisperTranscriber : IDisposable
         _modelDir = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "TinyBoss", "models");
-        _modelPath = Path.Combine(_modelDir, "ggml-base.en.bin");
+        _modelPath = Path.Combine(_modelDir, "ggml-tiny.en.bin");
         Directory.CreateDirectory(_modelDir);
+    }
+
+    /// <summary>
+    /// Preload the model on a background thread so first voice use is instant.
+    /// </summary>
+    public void PreloadAsync()
+    {
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await _gate.WaitAsync();
+                try { await EnsureModelLoadedAsync(CancellationToken.None); }
+                finally { _gate.Release(); }
+                ResetIdleTimer();
+                _logger.LogInformation("KH: Whisper model preloaded and ready");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "KH: Whisper model preload failed (will retry on first use)");
+            }
+        });
     }
 
     /// <summary>

@@ -33,6 +33,9 @@ public sealed class TinyBossConfig
     public int TileModifiers { get; set; } = 0x0002 | 0x0004;   // Ctrl+Shift
     public int TileKey { get; set; } = 0x47;                     // G
 
+    public int MovePageModifiers { get; set; } = 0x0002 | 0x0004; // Ctrl+Shift
+    public int MovePageKey { get; set; } = 0x4D;                  // M
+
     public int RebalanceModifiers { get; set; } = 0x0002 | 0x0004; // Ctrl+Shift
     public int RebalanceKey { get; set; } = 0x52;                   // R
 

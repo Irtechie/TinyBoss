@@ -18,6 +18,27 @@ if (!isFirst)
 
 ThreadPool.SetMinThreads(16, 16);
 
+// ── Global crash protection ─────────────────────────────────────────────────
+var crashLog = Path.Combine(
+    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+    "Programs", "TinyBoss", "crash.log");
+
+AppDomain.CurrentDomain.UnhandledException += (_, e) =>
+{
+    var msg = e.ExceptionObject is Exception ex
+        ? $"{ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}"
+        : e.ExceptionObject?.ToString();
+    try { File.AppendAllText(crashLog, $"\n[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] UNHANDLED: {msg}\n"); }
+    catch { }
+};
+
+TaskScheduler.UnobservedTaskException += (_, e) =>
+{
+    e.SetObserved(); // prevent crash from unobserved task exceptions
+    try { File.AppendAllText(crashLog, $"\n[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] TASK_UNOBSERVED: {e.Exception.Message}\n{e.Exception.StackTrace}\n"); }
+    catch { }
+};
+
 // ── Build Kestrel host (named pipe + legacy TCP) ────────────────────────────
 var builder = WebApplication.CreateBuilder(args);
 builder.Logging.AddConsole();
