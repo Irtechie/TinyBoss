@@ -5,10 +5,10 @@ namespace TinyBoss.Voice;
 
 /// <summary>
 /// Orchestrates voice-to-text using VAD + Whisper GPU:
-/// HotKey down → Start mic → VAD detects speech/silence in real-time
-/// On each silence gap → speech chunk sent to Whisper GPU and appended immediately
-/// HotKey up → flush remaining audio through Whisper and drain any queued chunks
-/// This keeps long dictation sessions from building one huge final paste.
+/// HotKey down -> Start mic -> VAD detects speech/silence in real-time
+/// On each silence gap -> speech chunk sent to Whisper GPU and buffered
+/// HotKey up -> flush remaining audio through Whisper, drain queued chunks, then inject once
+/// This preserves long dictation without sending synthetic input while the PTT key is held.
 /// </summary>
 public sealed class VoiceController : IDisposable
 {
@@ -36,8 +36,7 @@ public sealed class VoiceController : IDisposable
     private Channel<SpeechSegment>? _segmentChannel;
     private Task? _consumerTask;
     private CancellationTokenSource? _sessionCts;
-    private readonly List<string> _recognizedText = new();
-    private readonly object _recognizedLock = new();
+    private readonly VoiceTranscriptBuffer _transcriptBuffer = new();
 
     // VAD tuning constants (16kHz sample rate)
     private const int SAMPLE_RATE = 16000;
@@ -53,6 +52,7 @@ public sealed class VoiceController : IDisposable
     private const float MAX_SEGMENT_SEC = 8.0f;
     private const int MAX_SEGMENT_SAMPLES = (int)(SAMPLE_RATE * MAX_SEGMENT_SEC);
     private static readonly TimeSpan FinalDrainTimeout = TimeSpan.FromSeconds(120);
+    private static readonly TimeSpan KeyUpSettleDelay = TimeSpan.FromMilliseconds(150);
 
     public event Action<bool>? RecordingStateChanged;
     public event Action<string>? StatusMessage;
@@ -116,8 +116,7 @@ public sealed class VoiceController : IDisposable
             _silenceSampleCount = 0;
             _speechSampleCount = 0;
         }
-        lock (_recognizedLock)
-            _recognizedText.Clear();
+        _transcriptBuffer.Clear();
 
         // Start ordered transcription consumer
         _sessionCts?.Cancel();
@@ -311,19 +310,37 @@ public sealed class VoiceController : IDisposable
         }
         catch (AggregateException) { }
 
-        var pendingText = GetAndClearRecognizedText();
+        if (KeyUpSettleDelay > TimeSpan.Zero)
+            Thread.Sleep(KeyUpSettleDelay);
+
+        var pendingText = _transcriptBuffer.Flush();
         if (!string.IsNullOrWhiteSpace(pendingText))
         {
+            var dangerousMatch = _guard.CheckDestructiveCommand(pendingText);
+            if (dangerousMatch is not null)
+            {
+                VoiceDiag("DESTRUCTIVE_BLOCK_PENDING \"{0}\" in {1} chars", dangerousMatch, pendingText.Length);
+                PreserveTranscript(pendingText, "destructive-block");
+                StatusMessage?.Invoke($"Blocked dangerous command: {dangerousMatch}");
+                VoiceDiag("SESSION_COMPLETE");
+                _logger.LogInformation("KH: Voice session complete");
+                return;
+            }
+
             try
             {
                 var (success, message) = _injector.AppendAsync(pendingText + " ", _voiceTargetSessionId).GetAwaiter().GetResult();
                 VoiceDiag("INJECT_PENDING success={0} chars={1} message=\"{2}\"", success, pendingText.Length, message);
                 if (!success)
+                {
+                    PreserveTranscript(pendingText, "inject-failed");
                     StatusMessage?.Invoke(message);
+                }
             }
             catch (Exception ex)
             {
                 VoiceDiag("PENDING_INJECT_ERROR {0}: {1}", ex.GetType().Name, ex.Message);
+                PreserveTranscript(pendingText, "inject-error");
                 StatusMessage?.Invoke($"Voice inject error: {ex.Message}");
             }
         }
@@ -347,32 +364,17 @@ public sealed class VoiceController : IDisposable
 
         try
         {
-            var appendText = text.EndsWith(' ') ? text : text + " ";
-            var (success, message) = await _injector.AppendAsync(appendText, _voiceTargetSessionId, ct);
-            VoiceDiag("INJECT_APPEND success={0} chars={1} message=\"{2}\"", success, text.Length, message);
-            if (!success)
-            {
-                StatusMessage?.Invoke(message);
-                lock (_recognizedLock)
-                    _recognizedText.Add(text);
-            }
+            if (!_transcriptBuffer.Add(text))
+                return;
+
+            VoiceDiag("BUFFER_APPEND chars={0} segments={1} totalChars={2}",
+                text.Length, _transcriptBuffer.SegmentCount, _transcriptBuffer.CharacterCount);
+            await Task.CompletedTask;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            VoiceDiag("INJECT_ERROR {0}: {1}", ex.GetType().Name, ex.Message);
-            StatusMessage?.Invoke($"Voice inject error: {ex.Message}");
-            lock (_recognizedLock)
-                _recognizedText.Add(text);
-        }
-    }
-
-    private string GetAndClearRecognizedText()
-    {
-        lock (_recognizedLock)
-        {
-            var text = string.Join(" ", _recognizedText.Select(t => t.Trim()).Where(t => t.Length > 0)).Trim();
-            _recognizedText.Clear();
-            return text;
+            VoiceDiag("BUFFER_ERROR {0}: {1}", ex.GetType().Name, ex.Message);
+            StatusMessage?.Invoke($"Voice buffer error: {ex.Message}");
         }
     }
 
@@ -406,6 +408,22 @@ public sealed class VoiceController : IDisposable
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                 "Programs", "TinyBoss", "voice_diag.log");
             File.AppendAllText(path, line + Environment.NewLine);
+        }
+        catch { }
+    }
+
+    private static void PreserveTranscript(string text, string reason)
+    {
+        try
+        {
+            var dir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "Programs", "TinyBoss");
+            Directory.CreateDirectory(dir);
+            var path = Path.Combine(dir, "voice_failed_transcripts.log");
+            File.AppendAllText(path,
+                $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] reason={reason} chars={text.Length}{Environment.NewLine}{text}{Environment.NewLine}{Environment.NewLine}");
+            VoiceDiag("TRANSCRIPT_PRESERVED reason={0} chars={1}", reason, text.Length);
         }
         catch { }
     }

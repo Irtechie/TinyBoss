@@ -15,6 +15,8 @@ public sealed class TextInjector
     private readonly SessionRegistry _registry;
     private readonly ILogger<TextInjector> _logger;
     private const int ClipboardPasteThresholdChars = 80;
+    private static readonly object ClipboardOwnerLock = new();
+    private static nint _clipboardOwnerWindow;
 
     public TextInjector(SessionRegistry registry, ILogger<TextInjector> logger)
     {
@@ -296,14 +298,46 @@ public sealed class TextInjector
 
     private static bool TryOpenClipboard()
     {
+        var owner = GetClipboardOwnerWindow();
+        if (owner == nint.Zero)
+            return false;
+
         for (var i = 0; i < 8; i++)
         {
-            if (OpenClipboard(nint.Zero))
+            if (OpenClipboard(owner))
                 return true;
             Thread.Sleep(25);
         }
 
         return false;
+    }
+
+    private static nint GetClipboardOwnerWindow()
+    {
+        if (_clipboardOwnerWindow != nint.Zero)
+            return _clipboardOwnerWindow;
+
+        lock (ClipboardOwnerLock)
+        {
+            if (_clipboardOwnerWindow != nint.Zero)
+                return _clipboardOwnerWindow;
+
+            _clipboardOwnerWindow = CreateWindowEx(
+                0,
+                "STATIC",
+                "TinyBossClipboardOwner",
+                0,
+                0,
+                0,
+                0,
+                0,
+                HWND_MESSAGE,
+                nint.Zero,
+                GetModuleHandle(null),
+                nint.Zero);
+
+            return _clipboardOwnerWindow;
+        }
     }
 
     /// <summary>
@@ -348,6 +382,7 @@ public sealed class TextInjector
     private const ushort VK_V = 0x56;
     private const uint CF_UNICODETEXT = 13;
     private const uint GMEM_MOVEABLE = 0x0002;
+    private static readonly nint HWND_MESSAGE = new(-3);
 
     [StructLayout(LayoutKind.Explicit, Size = 40)]
     private struct INPUT
@@ -389,6 +424,24 @@ public sealed class TextInjector
 
     [DllImport("user32.dll")]
     private static extern int CountClipboardFormats();
+
+    [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern nint CreateWindowEx(
+        uint dwExStyle,
+        string lpClassName,
+        string lpWindowName,
+        uint dwStyle,
+        int x,
+        int y,
+        int nWidth,
+        int nHeight,
+        nint hWndParent,
+        nint hMenu,
+        nint hInstance,
+        nint lpParam);
+
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern nint GetModuleHandle(string? lpModuleName);
 
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern nint GlobalAlloc(uint uFlags, nuint dwBytes);
