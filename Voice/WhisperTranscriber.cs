@@ -17,7 +17,10 @@ public sealed class WhisperTranscriber : IDisposable
     private WhisperProcessor? _processor;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private Timer? _idleTimer;
-    private const int IdleTimeoutMs = 60_000;
+    private const int IdleTimeoutMs = 30 * 60_000;
+    private readonly string _diagPath = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "Programs", "TinyBoss", "voice_diag.log");
 
     public bool IsModelLoaded => _processor is not null;
 
@@ -36,19 +39,26 @@ public sealed class WhisperTranscriber : IDisposable
     /// </summary>
     public void PreloadAsync()
     {
+        VoiceDiag("WHISPER_PRELOAD_START");
         _ = Task.Run(async () =>
         {
             try
             {
                 await _gate.WaitAsync();
-                try { await EnsureModelLoadedAsync(CancellationToken.None); }
+                try
+                {
+                    await EnsureModelLoadedAsync(CancellationToken.None);
+                    await WarmUpProcessorAsync(CancellationToken.None);
+                }
                 finally { _gate.Release(); }
                 ResetIdleTimer();
                 _logger.LogInformation("KH: Whisper model preloaded and ready");
+                VoiceDiag("WHISPER_PRELOAD_READY");
             }
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "KH: Whisper model preload failed (will retry on first use)");
+                VoiceDiag("WHISPER_PRELOAD_FAIL {0}: {1}", ex.GetType().Name, ex.Message);
             }
         });
     }
@@ -115,6 +125,27 @@ public sealed class WhisperTranscriber : IDisposable
         _logger.LogInformation("KH: Whisper model loaded and ready");
     }
 
+    private async Task WarmUpProcessorAsync(CancellationToken ct)
+    {
+        if (_processor is null) return;
+
+        try
+        {
+            var silence = new float[16000 / 4];
+            await foreach (var _ in _processor.ProcessAsync(silence, ct))
+            {
+            }
+
+            _logger.LogInformation("KH: Whisper processor warmed up");
+            VoiceDiag("WHISPER_WARM_READY");
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "KH: Whisper processor warm-up failed; first transcription will warm it");
+            VoiceDiag("WHISPER_WARM_FAIL {0}: {1}", ex.GetType().Name, ex.Message);
+        }
+    }
+
     private async Task DownloadModelAsync(CancellationToken ct)
     {
         var tmpPath = _modelPath + ".tmp";
@@ -159,11 +190,22 @@ public sealed class WhisperTranscriber : IDisposable
             GC.Collect(2, GCCollectionMode.Aggressive, true);
 
             _logger.LogInformation("KH: Whisper model unloaded after idle timeout (~300 MB reclaimed)");
+            VoiceDiag("WHISPER_UNLOADED_IDLE");
         }
         finally
         {
             _gate.Release();
         }
+    }
+
+    private void VoiceDiag(string fmt, params object[] args)
+    {
+        try
+        {
+            var line = $"[{DateTime.Now:HH:mm:ss.fff}] {string.Format(fmt, args)}";
+            File.AppendAllText(_diagPath, line + Environment.NewLine);
+        }
+        catch { }
     }
 
     public void Dispose()

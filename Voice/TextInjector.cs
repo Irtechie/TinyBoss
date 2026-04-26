@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using Microsoft.Win32.SafeHandles;
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using System.Text;
@@ -179,9 +180,18 @@ public sealed class TextInjector
         var target = CaptureFocusedWindowTarget();
         if (target.IsTerminal)
         {
+            if (TryWriteConsoleInputBuffer(text, target, out var consoleMessage))
+                return new FocusedAppendAttempt(true, consoleMessage);
+
+            _logger.LogInformation(
+                "KH: Voice console input buffer failed for {N} chars target={Target}: {Reason}",
+                text.Length, target.Description, consoleMessage);
+
             TypeViaKeyboard(text, moveToEnd: true);
             await Task.CompletedTask;
-            return new FocusedAppendAttempt(true, $"terminal SendInput; target={target.Description}");
+            return new FocusedAppendAttempt(
+                true,
+                $"terminal SendInput fallback after console input failed ({consoleMessage}); target={target.Description}");
         }
 
         var paste = TryPasteViaClipboard(text, moveToEnd: true);
@@ -205,6 +215,115 @@ public sealed class TextInjector
         await Task.Delay(250, ct);
         return new FocusedAppendAttempt(true, $"{paste.Method}; target={target.Description}");
     }
+
+    private static bool TryWriteConsoleInputBuffer(
+        string text,
+        FocusedWindowTarget target,
+        out string message)
+    {
+        if (!target.ClassName.Equals("ConsoleWindowClass", StringComparison.OrdinalIgnoreCase))
+        {
+            message = $"console input unsupported for class={target.ClassName}";
+            return false;
+        }
+
+        if (target.ProcessId == 0)
+        {
+            message = "console input missing target process id";
+            return false;
+        }
+
+        var attached = AttachConsole(target.ProcessId);
+        if (!attached && Marshal.GetLastWin32Error() == ErrorAccessDenied)
+        {
+            FreeConsole();
+            attached = AttachConsole(target.ProcessId);
+        }
+
+        if (!attached)
+        {
+            message = $"AttachConsole failed lastError={Marshal.GetLastWin32Error()}";
+            return false;
+        }
+
+        try
+        {
+            using var input = CreateFile(
+                "CONIN$",
+                GenericRead | GenericWrite,
+                FileShareRead | FileShareWrite,
+                nint.Zero,
+                OpenExisting,
+                0,
+                nint.Zero);
+
+            if (input.IsInvalid)
+            {
+                message = $"CreateFile(CONIN$) failed lastError={Marshal.GetLastWin32Error()}";
+                return false;
+            }
+
+            var records = BuildConsoleInputRecords(text);
+            if (records.Length == 0)
+            {
+                message = "console input had no records";
+                return false;
+            }
+
+            const int maxRecordsPerWrite = 2048;
+            var writtenTotal = 0;
+            for (var offset = 0; offset < records.Length; offset += maxRecordsPerWrite)
+            {
+                var count = Math.Min(maxRecordsPerWrite, records.Length - offset);
+                var chunk = new CONSOLE_INPUT_RECORD[count];
+                Array.Copy(records, offset, chunk, 0, count);
+
+                if (!WriteConsoleInput(input, chunk, (uint)chunk.Length, out var written) ||
+                    written != chunk.Length)
+                {
+                    message = $"WriteConsoleInput failed at {writtenTotal}/{records.Length} records wrote={written}/{chunk.Length} lastError={Marshal.GetLastWin32Error()}";
+                    return false;
+                }
+
+                writtenTotal += (int)written;
+            }
+
+            message = $"console input buffer chars={text.Length} records={writtenTotal}; target={target.Description}";
+            return true;
+        }
+        finally
+        {
+            FreeConsole();
+        }
+    }
+
+    private static CONSOLE_INPUT_RECORD[] BuildConsoleInputRecords(string text)
+    {
+        var records = new CONSOLE_INPUT_RECORD[text.Length * 2];
+        for (var i = 0; i < text.Length; i++)
+        {
+            var c = text[i];
+            var inputIndex = i * 2;
+            records[inputIndex] = CreateConsoleKeyRecord(keyDown: true, c);
+            records[inputIndex + 1] = CreateConsoleKeyRecord(keyDown: false, c);
+        }
+
+        return records;
+    }
+
+    private static CONSOLE_INPUT_RECORD CreateConsoleKeyRecord(bool keyDown, char c) => new()
+    {
+        EventType = KEY_EVENT,
+        KeyEvent = new CONSOLE_KEY_EVENT_RECORD
+        {
+            KeyDown = keyDown ? 1 : 0,
+            RepeatCount = 1,
+            VirtualKeyCode = VK_PACKET,
+            VirtualScanCode = 0,
+            UnicodeChar = (ushort)c,
+            ControlKeyState = 0
+        }
+    };
 
     private static ClipboardPasteAttempt TryPasteViaClipboard(string text, bool moveToEnd)
     {
@@ -497,11 +616,19 @@ public sealed class TextInjector
     private const uint INPUT_KEYBOARD = 1;
     private const uint KEYEVENTF_UNICODE = 0x0004;
     private const uint KEYEVENTF_KEYUP = 0x0002;
+    private const ushort KEY_EVENT = 0x0001;
     private const ushort VK_END = 0x23;
     private const ushort VK_CONTROL = 0x11;
+    private const ushort VK_PACKET = 0xE7;
     private const ushort VK_V = 0x56;
     private const uint CF_UNICODETEXT = 13;
     private const uint GMEM_MOVEABLE = 0x0002;
+    private const uint GenericRead = 0x80000000;
+    private const uint GenericWrite = 0x40000000;
+    private const uint FileShareRead = 0x00000001;
+    private const uint FileShareWrite = 0x00000002;
+    private const uint OpenExisting = 3;
+    private const int ErrorAccessDenied = 5;
     private static readonly nint HWND_MESSAGE = new(-3);
 
     [StructLayout(LayoutKind.Explicit, Size = 40)]
@@ -515,6 +642,24 @@ public sealed class TextInjector
         [FieldOffset(24)] public nint dwExtraInfo;
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    private struct CONSOLE_INPUT_RECORD
+    {
+        public ushort EventType;
+        public CONSOLE_KEY_EVENT_RECORD KeyEvent;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct CONSOLE_KEY_EVENT_RECORD
+    {
+        public int KeyDown;
+        public ushort RepeatCount;
+        public ushort VirtualKeyCode;
+        public ushort VirtualScanCode;
+        public ushort UnicodeChar;
+        public uint ControlKeyState;
+    }
+
     [DllImport("user32.dll")]
     private static extern nint GetForegroundWindow();
 
@@ -526,6 +671,29 @@ public sealed class TextInjector
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool AttachConsole(uint dwProcessId);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool FreeConsole();
+
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern SafeFileHandle CreateFile(
+        string lpFileName,
+        uint dwDesiredAccess,
+        uint dwShareMode,
+        nint lpSecurityAttributes,
+        uint dwCreationDisposition,
+        uint dwFlagsAndAttributes,
+        nint hTemplateFile);
+
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode, EntryPoint = "WriteConsoleInputW")]
+    private static extern bool WriteConsoleInput(
+        SafeFileHandle hConsoleInput,
+        CONSOLE_INPUT_RECORD[] lpBuffer,
+        uint nLength,
+        out uint lpNumberOfEventsWritten);
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern bool OpenClipboard(nint hWndNewOwner);
