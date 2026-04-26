@@ -177,15 +177,21 @@ public sealed class TextInjector
     private async Task<FocusedAppendAttempt> AppendViaFocusedWindowAsync(string text, CancellationToken ct)
     {
         var target = CaptureFocusedWindowTarget();
-        var chord = SelectPasteChord(target);
-        var paste = TryPasteViaClipboard(text, moveToEnd: true, chord);
+        if (target.IsTerminal)
+        {
+            TypeViaKeyboard(text, moveToEnd: true);
+            await Task.CompletedTask;
+            return new FocusedAppendAttempt(true, $"terminal SendInput; target={target.Description}");
+        }
+
+        var paste = TryPasteViaClipboard(text, moveToEnd: true);
         if (!paste.Success)
         {
             _logger.LogInformation(
                 "KH: Voice clipboard paste failed for {N} chars target={Target}: {Reason}",
                 text.Length, target.Description, paste.Method);
 
-            if (text.Length > SendInputFallbackMaxChars && !target.IsTerminal)
+            if (text.Length > SendInputFallbackMaxChars)
             {
                 return new FocusedAppendAttempt(
                     false,
@@ -193,15 +199,14 @@ public sealed class TextInjector
             }
 
             TypeViaKeyboard(text, moveToEnd: true);
-            var fallback = target.IsTerminal ? "terminal SendInput fallback" : "batched SendInput";
-            return new FocusedAppendAttempt(true, $"{fallback} after clipboard failure ({paste.Method}); target={target.Description}");
+            return new FocusedAppendAttempt(true, $"batched SendInput after clipboard failure ({paste.Method}); target={target.Description}");
         }
 
         await Task.Delay(250, ct);
         return new FocusedAppendAttempt(true, $"{paste.Method}; target={target.Description}");
     }
 
-    private static ClipboardPasteAttempt TryPasteViaClipboard(string text, bool moveToEnd, PasteChord chord)
+    private static ClipboardPasteAttempt TryPasteViaClipboard(string text, bool moveToEnd)
     {
         string? previousText = null;
         var hadText = TryReadClipboardText(out previousText);
@@ -216,7 +221,7 @@ public sealed class TextInjector
 
         if (moveToEnd)
             SendVirtualKey(VK_END);
-        var pasteInput = SendPasteChord(chord);
+        var pasteInput = SendPasteChord();
         if (!pasteInput.Success)
         {
             if (hadText)
@@ -232,12 +237,12 @@ public sealed class TextInjector
                 TrySetClipboardText(previousText ?? string.Empty, out _);
             });
 
-            return new ClipboardPasteAttempt(true, $"clipboard/{FormatPasteChord(chord)} (restored previous text)");
+            return new ClipboardPasteAttempt(true, "clipboard/ctrl+v (restored previous text)");
         }
 
         var method = formatCount > 0
-            ? $"clipboard/{FormatPasteChord(chord)} (replaced non-text clipboard)"
-            : $"clipboard/{FormatPasteChord(chord)}";
+            ? "clipboard/ctrl+v (replaced non-text clipboard)"
+            : "clipboard/ctrl+v";
         return new ClipboardPasteAttempt(true, method);
     }
 
@@ -249,63 +254,23 @@ public sealed class TextInjector
         SendInput(2, inputs, Marshal.SizeOf<INPUT>());
     }
 
-    private static PasteInputAttempt SendPasteChord(PasteChord chord)
+    private static PasteInputAttempt SendPasteChord()
     {
-        INPUT[] inputs = chord switch
-        {
-            PasteChord.ControlShiftV =>
-            [
-                new INPUT { type = INPUT_KEYBOARD, wVk = VK_CONTROL },
-                new INPUT { type = INPUT_KEYBOARD, wVk = VK_SHIFT },
-                new INPUT { type = INPUT_KEYBOARD, wVk = VK_V },
-                new INPUT { type = INPUT_KEYBOARD, wVk = VK_V, dwFlags = KEYEVENTF_KEYUP },
-                new INPUT { type = INPUT_KEYBOARD, wVk = VK_SHIFT, dwFlags = KEYEVENTF_KEYUP },
-                new INPUT { type = INPUT_KEYBOARD, wVk = VK_CONTROL, dwFlags = KEYEVENTF_KEYUP },
-            ],
-            PasteChord.ShiftInsert =>
-            [
-                new INPUT { type = INPUT_KEYBOARD, wVk = VK_SHIFT },
-                new INPUT { type = INPUT_KEYBOARD, wVk = VK_INSERT },
-                new INPUT { type = INPUT_KEYBOARD, wVk = VK_INSERT, dwFlags = KEYEVENTF_KEYUP },
-                new INPUT { type = INPUT_KEYBOARD, wVk = VK_SHIFT, dwFlags = KEYEVENTF_KEYUP },
-            ],
-            _ =>
-            [
-                new INPUT { type = INPUT_KEYBOARD, wVk = VK_CONTROL },
-                new INPUT { type = INPUT_KEYBOARD, wVk = VK_V },
-                new INPUT { type = INPUT_KEYBOARD, wVk = VK_V, dwFlags = KEYEVENTF_KEYUP },
-                new INPUT { type = INPUT_KEYBOARD, wVk = VK_CONTROL, dwFlags = KEYEVENTF_KEYUP },
-            ],
-        };
+        INPUT[] inputs =
+        [
+            new INPUT { type = INPUT_KEYBOARD, wVk = VK_CONTROL },
+            new INPUT { type = INPUT_KEYBOARD, wVk = VK_V },
+            new INPUT { type = INPUT_KEYBOARD, wVk = VK_V, dwFlags = KEYEVENTF_KEYUP },
+            new INPUT { type = INPUT_KEYBOARD, wVk = VK_CONTROL, dwFlags = KEYEVENTF_KEYUP },
+        ];
         var sent = SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>());
         if (sent == inputs.Length)
-            return new PasteInputAttempt(true, $"clipboard/{FormatPasteChord(chord)}");
+            return new PasteInputAttempt(true, "clipboard/ctrl+v");
 
         return new PasteInputAttempt(
             false,
-            $"SendInput paste chord {FormatPasteChord(chord)} sent {sent}/{inputs.Length} lastError={Marshal.GetLastWin32Error()}");
+            $"SendInput paste chord ctrl+v sent {sent}/{inputs.Length} lastError={Marshal.GetLastWin32Error()}");
     }
-
-    private static PasteChord SelectPasteChord(FocusedWindowTarget target)
-    {
-        if (!target.IsTerminal)
-            return PasteChord.ControlV;
-
-        if (target.ClassName.Equals("ConsoleWindowClass", StringComparison.OrdinalIgnoreCase) ||
-            target.ClassName.Equals("mintty", StringComparison.OrdinalIgnoreCase))
-        {
-            return PasteChord.ShiftInsert;
-        }
-
-        return PasteChord.ControlV;
-    }
-
-    private static string FormatPasteChord(PasteChord chord) => chord switch
-    {
-        PasteChord.ControlShiftV => "ctrl+shift+v",
-        PasteChord.ShiftInsert => "shift+insert",
-        _ => "ctrl+v",
-    };
 
     private static bool TryReadClipboardText(out string? text)
     {
@@ -534,8 +499,6 @@ public sealed class TextInjector
     private const uint KEYEVENTF_KEYUP = 0x0002;
     private const ushort VK_END = 0x23;
     private const ushort VK_CONTROL = 0x11;
-    private const ushort VK_SHIFT = 0x10;
-    private const ushort VK_INSERT = 0x2D;
     private const ushort VK_V = 0x56;
     private const uint CF_UNICODETEXT = 13;
     private const uint GMEM_MOVEABLE = 0x0002;
@@ -642,10 +605,4 @@ public sealed class TextInjector
             $"terminal={IsTerminal},class={ClassName},process={ProcessName},hwnd=0x{Hwnd:X}";
     }
 
-    private enum PasteChord
-    {
-        ControlV,
-        ControlShiftV,
-        ShiftInsert
-    }
 }
