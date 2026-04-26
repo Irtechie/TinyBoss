@@ -15,6 +15,10 @@ public sealed class TextInjector
     private readonly SessionRegistry _registry;
     private readonly ILogger<TextInjector> _logger;
     private const int ClipboardPasteThresholdChars = 80;
+    private const int ClipboardRestoreDelayMs = 1500;
+    private const int ClipboardOpenAttempts = 24;
+    private const int ClipboardOpenRetryDelayMs = 25;
+    private const int SendInputBatchChars = 128;
     private static readonly object ClipboardOwnerLock = new();
     private static nint _clipboardOwnerWindow;
 
@@ -130,28 +134,35 @@ public sealed class TextInjector
         if (moveToEnd)
             SendVirtualKey(VK_END);
 
-        var inputs = new INPUT[2];
-        var sentChars = 0;
-        foreach (char c in text)
+        var offset = 0;
+        while (offset < text.Length)
         {
-            // Key down
-            inputs[0] = new INPUT
+            var charCount = Math.Min(SendInputBatchChars, text.Length - offset);
+            var inputs = new INPUT[charCount * 2];
+
+            for (var i = 0; i < charCount; i++)
             {
-                type = INPUT_KEYBOARD,
-                wScan = c,
-                dwFlags = KEYEVENTF_UNICODE
-            };
-            // Key up
-            inputs[1] = new INPUT
-            {
-                type = INPUT_KEYBOARD,
-                wScan = c,
-                dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP
-            };
-            SendInput(2, inputs, Marshal.SizeOf<INPUT>());
-            sentChars++;
-            if (sentChars % 64 == 0)
-                Thread.Sleep(2);
+                var c = text[offset + i];
+                var inputIndex = i * 2;
+                inputs[inputIndex] = new INPUT
+                {
+                    type = INPUT_KEYBOARD,
+                    wScan = c,
+                    dwFlags = KEYEVENTF_UNICODE
+                };
+                inputs[inputIndex + 1] = new INPUT
+                {
+                    type = INPUT_KEYBOARD,
+                    wScan = c,
+                    dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP
+                };
+            }
+
+            SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>());
+            offset += charCount;
+
+            if (offset < text.Length)
+                Thread.Sleep(1);
         }
     }
 
@@ -163,28 +174,29 @@ public sealed class TextInjector
             return "SendInput";
         }
 
-        if (!TryPasteViaClipboard(text, moveToEnd: true))
+        var paste = TryPasteViaClipboard(text, moveToEnd: true);
+        if (!paste.Success)
         {
+            _logger.LogInformation("KH: Voice clipboard paste failed for {N} chars: {Reason}", text.Length, paste.Method);
             TypeViaKeyboard(text, moveToEnd: true);
-            return "SendInput";
+            return $"batched SendInput after clipboard failure ({paste.Method})";
         }
 
         await Task.Delay(250, ct);
-        return "clipboard";
+        return paste.Method;
     }
 
-    private static bool TryPasteViaClipboard(string text, bool moveToEnd)
+    private static ClipboardPasteAttempt TryPasteViaClipboard(string text, bool moveToEnd)
     {
         string? previousText = null;
         var hadText = TryReadClipboardText(out previousText);
-        if (!hadText && CountClipboardFormats() > 0)
-            return false;
+        var formatCount = CountClipboardFormats();
 
-        if (!TrySetClipboardText(text))
+        if (!TrySetClipboardText(text, out var setFailure))
         {
             if (hadText)
-                TrySetClipboardText(previousText ?? string.Empty);
-            return false;
+                TrySetClipboardText(previousText ?? string.Empty, out _);
+            return new ClipboardPasteAttempt(false, setFailure);
         }
 
         if (moveToEnd)
@@ -195,12 +207,17 @@ public sealed class TextInjector
         {
             _ = Task.Run(async () =>
             {
-                await Task.Delay(500);
-                TrySetClipboardText(previousText ?? string.Empty);
+                await Task.Delay(ClipboardRestoreDelayMs);
+                TrySetClipboardText(previousText ?? string.Empty, out _);
             });
+
+            return new ClipboardPasteAttempt(true, "clipboard (restored previous text)");
         }
 
-        return true;
+        var method = formatCount > 0
+            ? "clipboard (replaced non-text clipboard)"
+            : "clipboard";
+        return new ClipboardPasteAttempt(true, method);
     }
 
     private static void SendVirtualKey(ushort key)
@@ -253,10 +270,14 @@ public sealed class TextInjector
         }
     }
 
-    private static bool TrySetClipboardText(string text)
+    private static bool TrySetClipboardText(string text, out string failure)
     {
+        failure = string.Empty;
         if (!TryOpenClipboard())
+        {
+            failure = $"OpenClipboard failed lastError={Marshal.GetLastWin32Error()}";
             return false;
+        }
 
         nint handle = nint.Zero;
         try
@@ -264,11 +285,17 @@ public sealed class TextInjector
             var bytes = Encoding.Unicode.GetBytes(text + "\0");
             handle = GlobalAlloc(GMEM_MOVEABLE, (nuint)bytes.Length);
             if (handle == nint.Zero)
+            {
+                failure = $"GlobalAlloc failed lastError={Marshal.GetLastWin32Error()}";
                 return false;
+            }
 
             var ptr = GlobalLock(handle);
             if (ptr == nint.Zero)
+            {
+                failure = $"GlobalLock failed lastError={Marshal.GetLastWin32Error()}";
                 return false;
+            }
 
             try
             {
@@ -280,10 +307,16 @@ public sealed class TextInjector
             }
 
             if (!EmptyClipboard())
+            {
+                failure = $"EmptyClipboard failed lastError={Marshal.GetLastWin32Error()}";
                 return false;
+            }
 
             if (SetClipboardData(CF_UNICODETEXT, handle) == nint.Zero)
+            {
+                failure = $"SetClipboardData failed lastError={Marshal.GetLastWin32Error()}";
                 return false;
+            }
 
             handle = nint.Zero; // Clipboard owns it now.
             return true;
@@ -302,11 +335,11 @@ public sealed class TextInjector
         if (owner == nint.Zero)
             return false;
 
-        for (var i = 0; i < 8; i++)
+        for (var i = 0; i < ClipboardOpenAttempts; i++)
         {
             if (OpenClipboard(owner))
                 return true;
-            Thread.Sleep(25);
+            Thread.Sleep(ClipboardOpenRetryDelayMs);
         }
 
         return false;
@@ -454,4 +487,6 @@ public sealed class TextInjector
 
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern nint GlobalFree(nint hMem);
+
+    private sealed record ClipboardPasteAttempt(bool Success, string Method);
 }
