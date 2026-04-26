@@ -23,6 +23,13 @@ public sealed class HotKeyListener : IDisposable
     private const int VK_LWIN = 0x5B;
     private const int VK_RWIN = 0x5C;
     private const int VOICE_RELEASE_DEBOUNCE_POLLS = 5;
+    private const int WH_KEYBOARD_LL = 13;
+    private const int HC_ACTION = 0;
+    private const int WM_KEYDOWN = 0x0100;
+    private const int WM_KEYUP = 0x0101;
+    private const int WM_SYSKEYDOWN = 0x0104;
+    private const int WM_SYSKEYUP = 0x0105;
+    private const uint LLKHF_INJECTED = 0x00000010;
 
     // Hotkey IDs
     public const int HOTKEY_TILE = 2;
@@ -34,6 +41,9 @@ public sealed class HotKeyListener : IDisposable
     private volatile bool _reregisterRequested;
     private readonly TinyBossConfig _config;
     private readonly ILogger<HotKeyListener> _logger;
+    private readonly VoiceHotkeyState _voiceState = new();
+    private LowLevelKeyboardProc? _keyboardHookProc;
+    private nint _keyboardHook;
 
     // Overlay mode: when true, poll for Escape (dismiss)
     private volatile bool _overlayActive;
@@ -90,7 +100,7 @@ public sealed class HotKeyListener : IDisposable
             return;
         }
 
-        // Tile + Rebalance use RegisterHotKey; voice uses polling
+        // Tile + Rebalance use RegisterHotKey; voice uses a suppressing low-level hook.
         var lastTileMods = _config.TileModifiers;
         var lastTileKey = _config.TileKey;
         var lastRebalMods = _config.RebalanceModifiers;
@@ -98,6 +108,7 @@ public sealed class HotKeyListener : IDisposable
 
         RegisterHotKeyWithLog(HOTKEY_TILE, lastTileMods | MOD_NOREPEAT, lastTileKey, "Tile");
         RegisterHotKeyWithLog(HOTKEY_REBALANCE, lastRebalMods | MOD_NOREPEAT, lastRebalKey, "Rebalance");
+        InstallVoiceKeyboardHook();
 
         var voiceDown = false;
         var voiceReleaseMisses = 0;
@@ -140,6 +151,8 @@ public sealed class HotKeyListener : IDisposable
                     lastRebalKey = newRebalKey;
                     _logger.LogInformation("KH: Rebalance hotkey updated live");
                 }
+
+                _voiceState.Reset();
             }
 
             if (PeekMessage(out var msg, _hwnd, 0, 0, PM_REMOVE))
@@ -161,27 +174,30 @@ public sealed class HotKeyListener : IDisposable
                 DispatchMessage(ref msg);
             }
 
-            // Poll voice push-to-talk (reads config dynamically — no re-register needed)
-            bool voiceHeld = IsComboHeld(_config.VoiceModifiers, _config.VoiceKey);
-            if (voiceHeld && !voiceDown)
+            if (_keyboardHook == nint.Zero)
             {
-                voiceDown = true;
-                voiceReleaseMisses = 0;
-                VoiceKeyDown?.Invoke();
-            }
-            else if (!voiceHeld && voiceDown)
-            {
-                voiceReleaseMisses++;
-                if (voiceReleaseMisses >= VOICE_RELEASE_DEBOUNCE_POLLS)
+                // Fallback only. The hook path suppresses the voice key; polling cannot.
+                bool voiceHeld = IsComboHeld(_config.VoiceModifiers, _config.VoiceKey);
+                if (voiceHeld && !voiceDown)
                 {
-                    voiceDown = false;
+                    voiceDown = true;
                     voiceReleaseMisses = 0;
-                    VoiceKeyUp?.Invoke();
+                    VoiceKeyDown?.Invoke();
                 }
-            }
-            else if (voiceHeld)
-            {
-                voiceReleaseMisses = 0;
+                else if (!voiceHeld && voiceDown)
+                {
+                    voiceReleaseMisses++;
+                    if (voiceReleaseMisses >= VOICE_RELEASE_DEBOUNCE_POLLS)
+                    {
+                        voiceDown = false;
+                        voiceReleaseMisses = 0;
+                        VoiceKeyUp?.Invoke();
+                    }
+                }
+                else if (voiceHeld)
+                {
+                    voiceReleaseMisses = 0;
+                }
             }
 
             // Poll for Escape when overlay is active
@@ -202,7 +218,59 @@ public sealed class HotKeyListener : IDisposable
 
         UnregisterHotKey(_hwnd, HOTKEY_TILE);
         UnregisterHotKey(_hwnd, HOTKEY_REBALANCE);
+        if (_keyboardHook != nint.Zero)
+            UnhookWindowsHookEx(_keyboardHook);
         DestroyWindow(_hwnd);
+    }
+
+    private void InstallVoiceKeyboardHook()
+    {
+        _keyboardHookProc = KeyboardHookProc;
+        _keyboardHook = SetWindowsHookEx(WH_KEYBOARD_LL, _keyboardHookProc, GetModuleHandle(null), 0);
+        if (_keyboardHook == nint.Zero)
+        {
+            var err = Marshal.GetLastWin32Error();
+            _logger.LogError("KH: Voice keyboard hook failed (error {Err}) — falling back to non-suppressing polling", err);
+            HotKeyDiag("VOICE_HOOK_FAIL error={0}", err);
+        }
+        else
+        {
+            _logger.LogInformation("KH: Voice keyboard hook installed");
+            HotKeyDiag("VOICE_HOOK_INSTALLED");
+        }
+    }
+
+    private nint KeyboardHookProc(int nCode, nint wParam, nint lParam)
+    {
+        if (nCode == HC_ACTION)
+        {
+            var message = (int)wParam;
+            var isKeyDown = message is WM_KEYDOWN or WM_SYSKEYDOWN;
+            var isKeyUp = message is WM_KEYUP or WM_SYSKEYUP;
+
+            if (isKeyDown || isKeyUp)
+            {
+                var data = Marshal.PtrToStructure<KBDLLHOOKSTRUCT>(lParam);
+                var injected = (data.flags & LLKHF_INJECTED) != 0;
+                if (!injected)
+                {
+                    var transition = _voiceState.ProcessKeyEvent(
+                        (int)data.vkCode,
+                        isKeyDown,
+                        _config.VoiceModifiers,
+                        _config.VoiceKey);
+
+                    if (transition.Started)
+                        ThreadPool.QueueUserWorkItem(_ => VoiceKeyDown?.Invoke());
+                    if (transition.Stopped)
+                        ThreadPool.QueueUserWorkItem(_ => VoiceKeyUp?.Invoke());
+                    if (transition.Suppress)
+                        return 1;
+                }
+            }
+        }
+
+        return CallNextHookEx(_keyboardHook, nCode, wParam, lParam);
     }
 
     private bool IsComboHeld(int modifiers, int key)
@@ -253,6 +321,19 @@ public sealed class HotKeyListener : IDisposable
         _messageThread?.Join(2000);
     }
 
+    private static void HotKeyDiag(string fmt, params object[] args)
+    {
+        try
+        {
+            var line = $"[{DateTime.Now:HH:mm:ss.fff}] {string.Format(fmt, args)}";
+            var path = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "Programs", "TinyBoss", "voice_diag.log");
+            File.AppendAllText(path, line + Environment.NewLine);
+        }
+        catch { }
+    }
+
     // ── PInvoke ──────────────────────────────────────────────────────────────
 
     private static readonly nint HWND_MESSAGE = new(-3);
@@ -266,6 +347,15 @@ public sealed class HotKeyListener : IDisposable
 
     [DllImport("user32.dll")]
     private static extern short GetAsyncKeyState(int vKey);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern nint SetWindowsHookEx(int idHook, LowLevelKeyboardProc lpfn, nint hMod, uint dwThreadId);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool UnhookWindowsHookEx(nint hhk);
+
+    [DllImport("user32.dll")]
+    private static extern nint CallNextHookEx(nint hhk, int nCode, nint wParam, nint lParam);
 
     [DllImport("user32.dll")]
     private static extern bool PeekMessage(out MSG lpMsg, nint hWnd, uint wMsgFilterMin, uint wMsgFilterMax, uint wRemoveMsg);
@@ -323,4 +413,16 @@ public sealed class HotKeyListener : IDisposable
     }
 
     private delegate nint WndProc(nint hWnd, uint msg, nint wParam, nint lParam);
+
+    private delegate nint LowLevelKeyboardProc(int nCode, nint wParam, nint lParam);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct KBDLLHOOKSTRUCT
+    {
+        public uint vkCode;
+        public uint scanCode;
+        public uint flags;
+        public uint time;
+        public nint dwExtraInfo;
+    }
 }
