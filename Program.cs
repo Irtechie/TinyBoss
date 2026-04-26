@@ -74,9 +74,13 @@ builder.Services.AddSingleton<DragWatcher>();
 var app = builder.Build();
 app.UseWebSockets();
 
-var authToken = Environment.GetEnvironmentVariable("PITBOSS_AUTH_TinyBoss") ?? string.Empty;
+var authToken =
+    Environment.GetEnvironmentVariable("PITBOSS_AUTH_TINYBOSS")
+    ?? Environment.GetEnvironmentVariable("PITBOSS_AUTH_TinyBoss")
+    ?? Environment.GetEnvironmentVariable("PITBOSS_AUTH_KITTENHERDER")
+    ?? string.Empty;
 if (string.IsNullOrEmpty(authToken))
-    app.Logger.LogWarning("PITBOSS_AUTH_TinyBoss not set — running in open dev mode");
+    app.Logger.LogWarning("No TinyBoss auth token set (PITBOSS_AUTH_TINYBOSS or PITBOSS_AUTH_KITTENHERDER) — running in open dev mode");
 
 // ── Single multiplexed WebSocket endpoint (same protocol, transport changed) ──
 app.MapGet("/ws", async (HttpContext ctx,

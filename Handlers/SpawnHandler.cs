@@ -18,9 +18,12 @@ public sealed class SpawnHandler
     private readonly HashSet<string> _allowlist;
 
     // Env var override lets logos.env or service config point at a custom path.
+    // Keep KittenHerder as a compatibility fallback for existing PitBoss setups.
     // Default: allowed_executables.txt alongside the exe (works under any service account).
     private static readonly string AllowlistPath =
-        Environment.GetEnvironmentVariable("TinyBoss_ALLOWLIST_PATH")
+        Environment.GetEnvironmentVariable("TINYBOSS_ALLOWLIST_PATH")
+        ?? Environment.GetEnvironmentVariable("TinyBoss_ALLOWLIST_PATH")
+        ?? Environment.GetEnvironmentVariable("KITTENHERDER_ALLOWLIST_PATH")
         ?? Path.Combine(AppContext.BaseDirectory, "allowed_executables.txt");
 
     public SpawnHandler(SessionRegistry registry, ILogger<SpawnHandler> logger)
