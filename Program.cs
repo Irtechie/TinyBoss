@@ -53,6 +53,7 @@ builder.Services.AddSingleton(TinyBossConfig.Load());
 builder.Services.AddSingleton<SessionRegistry>();
 builder.Services.AddSingleton<SpawnHandler>();
 builder.Services.AddSingleton<InjectHandler>();
+builder.Services.AddSingleton<WindowInjectHandler>();
 builder.Services.AddSingleton<KillHandler>();
 builder.Services.AddSingleton<IntrospectHandler>();
 builder.Services.AddSingleton<SignalHandler>();
@@ -85,6 +86,7 @@ if (string.IsNullOrEmpty(authToken))
 // ── Single multiplexed WebSocket endpoint (same protocol, transport changed) ──
 app.MapGet("/ws", async (HttpContext ctx,
     SpawnHandler spawn, InjectHandler inject, KillHandler kill,
+    WindowInjectHandler windowInject,
     IntrospectHandler introspect, SignalHandler signal, AnswerUserHandler answerUser,
     RenameHandler rename,
     ILogger<Program> logger) =>
@@ -99,7 +101,7 @@ app.MapGet("/ws", async (HttpContext ctx,
     logger.LogInformation("KH: Client connected");
 
     var handler = new MessageHandler(
-        spawn, inject, kill, introspect, signal, answerUser, rename,
+        spawn, inject, windowInject, kill, introspect, signal, answerUser, rename,
         ctx.RequestServices.GetRequiredService<ILogger<MessageHandler>>(),
         authToken);
 

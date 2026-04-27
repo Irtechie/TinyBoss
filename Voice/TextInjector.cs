@@ -85,6 +85,73 @@ public sealed class TextInjector
     }
 
     /// <summary>
+    /// Inject text into a specific visible window. Managed sessions still use stdin;
+    /// otherwise TinyBoss focuses the target window and uses the focused-window
+    /// transport ladder already used by voice dictation.
+    /// </summary>
+    public async Task<(bool Success, string Message)> InjectWindowAsync(string text, nint hwnd, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return (false, "No text to inject");
+
+        if (hwnd == nint.Zero || !IsWindow(hwnd))
+            return (false, "Target window no longer exists");
+
+        var session = FindManagedSessionForWindow(hwnd);
+        if (session is not null)
+        {
+            if (session.SourceSurface.Equals("discord", StringComparison.OrdinalIgnoreCase))
+                return (false, "Inject not permitted for discord-surface sessions");
+
+            try
+            {
+                if (session.Process.HasExited)
+                    return (false, "Target session has exited");
+
+                var stdinText = text.EndsWith('\n') ? text : text + "\n";
+                await session.Process.StandardInput.WriteAsync(stdinText.AsMemory(), ct);
+                _logger.LogInformation("KH: Window inject used stdin for session {Id} ({N} chars)",
+                    session.SessionId, text.Length);
+                return (true, $"Injected into {session.Command}");
+            }
+            catch (InvalidOperationException)
+            {
+                // Fall through to visible-window injection when stdin is unavailable.
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "KH: Window inject stdin failed for session {Id}", session.SessionId);
+                return (false, ex.Message);
+            }
+        }
+
+        if (!SetForegroundWindow(hwnd))
+        {
+            var message = $"Target window 0x{hwnd:X} did not accept focus";
+            _logger.LogInformation("KH: {Message}", message);
+            return (false, message);
+        }
+
+        await Task.Delay(120, ct);
+        var focused = GetForegroundWindow();
+        if (focused != hwnd)
+        {
+            var message = $"Target window 0x{hwnd:X} is not foreground after focus attempt";
+            _logger.LogInformation("KH: {Message}; focused=0x{Focused:X}", message, focused);
+            return (false, message);
+        }
+
+        var textWithNewline = text.EndsWith('\n') ? text : text + "\n";
+        var append = await AppendViaFocusedWindowAsync(textWithNewline, ct);
+        _logger.LogInformation("KH: Window inject into HWND 0x{Hwnd:X} success={Success} chars={N} method={Method}",
+            hwnd, append.Success, text.Length, append.Message);
+
+        return append.Success
+            ? (true, $"Injected into window 0x{hwnd:X} ({append.Message})")
+            : (false, append.Message);
+    }
+
+    /// <summary>
     /// Append text without sending Enter. Used for dictation into focused windows.
     /// </summary>
     public async Task<(bool Success, string Message)> AppendAsync(string text, string? targetSessionId, CancellationToken ct = default)
@@ -571,6 +638,31 @@ public sealed class TextInjector
         return null;
     }
 
+    private ManagedSession? FindManagedSessionForWindow(nint hwnd)
+    {
+        try
+        {
+            GetWindowThreadProcessId(hwnd, out var pid);
+            if (pid == 0) return null;
+
+            foreach (var session in _registry.GetSnapshot())
+            {
+                try
+                {
+                    if (!session.Process.HasExited && session.Process.Id == pid)
+                        return session;
+                }
+                catch { }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "KH: Failed to find managed session for HWND 0x{Hwnd:X}", hwnd);
+        }
+
+        return null;
+    }
+
     private static FocusedWindowTarget CaptureFocusedWindowTarget()
     {
         var hwnd = GetForegroundWindow();
@@ -662,6 +754,9 @@ public sealed class TextInjector
 
     [DllImport("user32.dll")]
     private static extern nint GetForegroundWindow();
+
+    [DllImport("user32.dll")]
+    private static extern bool SetForegroundWindow(nint hWnd);
 
     [DllImport("user32.dll")]
     private static extern uint GetWindowThreadProcessId(nint hWnd, out uint processId);

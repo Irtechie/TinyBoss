@@ -27,6 +27,7 @@ public static class KhMessageType
     public const string Hello       = "hello";
     public const string Spawn       = "spawn";
     public const string Inject      = "inject";
+    public const string WindowInject = "window_inject";
     public const string Kill        = "kill";
     public const string Signal      = "signal";
     public const string Introspect  = "introspect";
@@ -57,6 +58,14 @@ public sealed record SpawnPayload(
 
 public sealed record InjectPayload(
     [property: JsonPropertyName("text")] string Text
+);
+
+public sealed record WindowInjectPayload(
+    [property: JsonPropertyName("text")]           string Text,
+    [property: JsonPropertyName("hwnd")]           string? Hwnd,
+    [property: JsonPropertyName("slot")]           int? Slot,
+    [property: JsonPropertyName("monitor_handle")] string? MonitorHandle,
+    [property: JsonPropertyName("source_surface")] string? SourceSurface
 );
 
 public sealed record AnswerUserPayload(
