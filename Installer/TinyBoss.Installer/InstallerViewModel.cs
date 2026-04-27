@@ -20,11 +20,20 @@ public partial class InstallerViewModel : ObservableObject
     [ObservableProperty] private WizardPage _currentPage = WizardPage.Welcome;
     [ObservableProperty] private string _overallStatus = "";
     [ObservableProperty] private string _logText = "";
+    [ObservableProperty] private bool _installClis;
 
     public ObservableCollection<CheckItem> Checks { get; } = new();
 
     public InstallerViewModel()
     {
+        BuildChecks();
+    }
+
+    private void BuildChecks()
+    {
+        Checks.Clear();
+
+        // Core install steps (always present)
         Checks.Add(new CheckItem
         {
             Id = "copy",
@@ -51,7 +60,53 @@ public partial class InstallerViewModel : ObservableObject
             Checker = ct => AppInstaller.DetectRegistration(ct),
             Installer = (p, ct) => AppInstaller.RegisterApp(p, ct),
         });
+
+        // CLI tools (only when user opts in)
+        if (InstallClis)
+        {
+            Checks.Add(new CheckItem
+            {
+                Id = "nodejs",
+                Name = "Node.js",
+                Description = "JavaScript runtime required by CLI tools",
+                Checker = ct => CliInstaller.DetectNodeJs(ct),
+                Installer = (p, ct) => CliInstaller.InstallNodeJs(p, ct),
+            });
+
+            foreach (var cli in CliInstaller.AllClis)
+            {
+                if (!cli.IsAvailable)
+                {
+                    // Show as disabled "Coming soon" item
+                    Checks.Add(new CheckItem
+                    {
+                        Id = cli.Id,
+                        Name = cli.DisplayName,
+                        Description = cli.Description,
+                        DependsOn = ["nodejs"],
+                        IsSelected = false,
+                        Checker = ct => Task.FromResult(new CheckResult(false, "", cli.Description)),
+                        Installer = null, // no installer — stub only
+                    });
+                }
+                else
+                {
+                    var captured = cli; // closure safety
+                    Checks.Add(new CheckItem
+                    {
+                        Id = cli.Id,
+                        Name = cli.DisplayName,
+                        Description = cli.Description,
+                        DependsOn = ["nodejs"],
+                        Checker = ct => CliInstaller.DetectCli(captured, ct),
+                        Installer = (p, ct) => CliInstaller.InstallCli(captured, p, ct),
+                    });
+                }
+            }
+        }
     }
+
+    partial void OnInstallClisChanged(bool value) => BuildChecks();
 
     [RelayCommand]
     private void GoToInstall()
@@ -101,7 +156,15 @@ public partial class InstallerViewModel : ObservableObject
                 Log($"⚠ {check.Name} detect: {ex.Message}");
             }
 
-            // Install
+            // Install (skip if no installer — stub items)
+            if (check.Installer is null)
+            {
+                check.Status = CheckStatus.Skipped;
+                check.StatusMessage = check.FailureHint is { Length: > 0 } hint ? hint : "Not available";
+                Log($"⏭ {check.Name}: {check.StatusMessage}");
+                continue;
+            }
+
             check.Status = CheckStatus.Installing;
             check.ProgressPercent = 0;
             OverallStatus = $"Installing {check.Name}…";
@@ -133,7 +196,7 @@ public partial class InstallerViewModel : ObservableObject
             }
         }
 
-        var allGood = Checks.All(c => c.Status is CheckStatus.Found or CheckStatus.Installed);
+        var allGood = Checks.All(c => c.Status is CheckStatus.Found or CheckStatus.Installed or CheckStatus.Skipped);
         OverallStatus = allGood ? "Install complete ✅" : "Some steps failed — see details";
         Log("=== Install Complete ===\n");
 

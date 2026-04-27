@@ -33,12 +33,36 @@ public sealed class TinyBossConfig
     public int TileModifiers { get; set; } = 0x0002 | 0x0004;   // Ctrl+Shift
     public int TileKey { get; set; } = 0x47;                     // G
 
+    public int MovePageModifiers { get; set; } = 0x0002 | 0x0004; // Ctrl+Shift
+    public int MovePageKey { get; set; } = 0x4D;                  // M
+
     public int RebalanceModifiers { get; set; } = 0x0002 | 0x0004; // Ctrl+Shift
     public int RebalanceKey { get; set; } = 0x52;                   // R
 
     // ── Audio ────────────────────────────────────────────────────────────────
     /// <summary>NAudio device ID. Null = system default.</summary>
     public string? MicDeviceId { get; set; }
+
+    // ── Monitors ─────────────────────────────────────────────────────────────
+    /// <summary>
+    /// Monitor device names where tiling is enabled. Null or empty = all monitors.
+    /// Example: ["\\.\DISPLAY1", "\\.\DISPLAY3"]
+    /// </summary>
+    public List<string>? EnabledMonitors { get; set; }
+
+    // ── Snap Layout Override ─────────────────────────────────────────────────
+    /// <summary>
+    /// When true, disables Windows 11 Snap Layouts flyout and replaces
+    /// drag-to-top-edge with TinyBoss's own tiling overlay.
+    /// </summary>
+    public bool OverrideSnapLayouts { get; set; } = true;
+
+    // ── Grid Layout ──────────────────────────────────────────────────────────
+    /// <summary>
+    /// Layout for the 6-pane grid. "2x3" = 2 rows × 3 cols (default),
+    /// "3x2" = 3 rows × 2 cols.
+    /// </summary>
+    public string GridLayout { get; set; } = "2x3";
 
     // ── Whisper ──────────────────────────────────────────────────────────────
     public string ModelDir { get; set; } = Path.Combine(

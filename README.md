@@ -1,2 +1,3 @@
-# KittenHerder
-PowerShell/Bash/CLI controller
+# TinyBoss
+
+PowerShell/Bash/CLI and window controller evolved from KittenHerder.

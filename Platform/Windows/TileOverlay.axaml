@@ -6,6 +6,7 @@
         Background="Transparent"
         SystemDecorations="None"
         ShowInTaskbar="False"
+        ShowActivated="False"
         Topmost="True"
         CanResize="False">
     <Canvas x:Name="ZoneCanvas" />

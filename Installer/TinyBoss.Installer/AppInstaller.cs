@@ -95,6 +95,8 @@ public static class AppInstaller
         progress(20, "Creating shortcuts…");
 
         var exePath = Path.Combine(InstallDir, AppExeName);
+        var iconPath = Path.Combine(InstallDir, "Assets", "TinyBoss.ico");
+        var shortcutIcon = File.Exists(iconPath) ? iconPath : exePath;
         var desktop = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
         var startMenu = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.StartMenu), "Programs");
@@ -107,7 +109,7 @@ public static class AppInstaller
                 $sc = $ws.CreateShortcut('{lnkPath}')
                 $sc.TargetPath = '{exePath}'
                 $sc.WorkingDirectory = '{InstallDir}'
-                $sc.IconLocation = '{exePath},0'
+                $sc.IconLocation = '{shortcutIcon}'
                 $sc.Description = 'TinyBoss - Window Manager & Voice CLI'
                 $sc.Save()
                 """;
@@ -126,6 +128,8 @@ public static class AppInstaller
         progress(50, "Registering in Add/Remove Programs…");
 
         var exePath = Path.Combine(InstallDir, AppExeName);
+        var iconPath = Path.Combine(InstallDir, "Assets", "TinyBoss.ico");
+        var displayIcon = File.Exists(iconPath) ? iconPath : exePath;
         var uninstallScript = Path.Combine(InstallDir, "uninstall-tinyboss.ps1");
         var uninstallCommand = File.Exists(uninstallScript)
             ? $"powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"{uninstallScript}\""
@@ -143,7 +147,7 @@ public static class AppInstaller
 
             key.SetValue("DisplayName", "TinyBoss");
             key.SetValue("Publisher", "Irtechie");
-            key.SetValue("DisplayIcon", exePath);
+            key.SetValue("DisplayIcon", displayIcon);
             key.SetValue("InstallLocation", InstallDir);
             key.SetValue("UninstallString", uninstallCommand);
             key.SetValue("QuietUninstallString", $"{uninstallCommand} -Quiet");

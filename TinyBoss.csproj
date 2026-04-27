@@ -2,7 +2,7 @@
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <TargetFramework>net10.0</TargetFramework>
+    <TargetFramework>net10.0-windows</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <NoWarn>CA1416</NoWarn>
@@ -18,14 +18,21 @@
     <PackageReference Include="Avalonia" Version="11.3.3" />
     <PackageReference Include="Avalonia.Desktop" Version="11.3.3" />
     <PackageReference Include="Avalonia.Themes.Fluent" Version="11.3.3" />
+    <PackageReference Include="Tmds.DBus.Protocol" Version="0.21.3" />
 
     <!-- ASP.NET Core (Kestrel for named pipe server) -->
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <PackageReference Include="org.k2fsa.sherpa.onnx" Version="1.12.40" />
+    <PackageReference Include="org.k2fsa.sherpa.onnx.runtime.win-x64" Version="1.12.40" />
 
     <!-- Voice input -->
-    <PackageReference Include="Whisper.net" Version="1.8.0" />
-    <PackageReference Include="Whisper.net.Runtime" Version="1.8.0" />
+    <PackageReference Include="Whisper.net" Version="1.9.0" />
+    <PackageReference Include="Whisper.net.Runtime.Cuda.Windows" Version="1.9.0" />
     <PackageReference Include="NAudio" Version="2.3.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.WindowsDesktop.App" />
   </ItemGroup>
 
   <ItemGroup>
@@ -38,11 +45,17 @@
   <!-- Exclude installer project from this build -->
   <ItemGroup>
     <Compile Remove="Installer\**" />
+    <Compile Remove="TinyBoss.Tests\**" />
     <Content Remove="Installer\**" />
+    <Content Remove="TinyBoss.Tests\**" />
     <EmbeddedResource Remove="Installer\**" />
+    <EmbeddedResource Remove="TinyBoss.Tests\**" />
     <None Remove="Installer\**" />
+    <None Remove="TinyBoss.Tests\**" />
     <AvaloniaResource Remove="Installer\**" />
+    <AvaloniaResource Remove="TinyBoss.Tests\**" />
     <AvaloniaXaml Remove="Installer\**" />
+    <AvaloniaXaml Remove="TinyBoss.Tests\**" />
   </ItemGroup>
 
 </Project>

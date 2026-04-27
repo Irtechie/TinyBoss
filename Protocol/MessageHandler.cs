@@ -16,10 +16,12 @@ public sealed class MessageHandler
 {
     private readonly SpawnHandler _spawn;
     private readonly InjectHandler _inject;
+    private readonly WindowInjectHandler _windowInject;
     private readonly KillHandler _kill;
     private readonly IntrospectHandler _introspect;
     private readonly SignalHandler _signal;
     private readonly AnswerUserHandler _answerUser;
+    private readonly RenameHandler _rename;
     private readonly ILogger<MessageHandler> _logger;
     private readonly string _authToken;
 
@@ -28,16 +30,19 @@ public sealed class MessageHandler
         System.Threading.Channels.Channel.CreateBounded<byte[]>(512);
 
     public MessageHandler(
-        SpawnHandler spawn, InjectHandler inject, KillHandler kill,
+        SpawnHandler spawn, InjectHandler inject, WindowInjectHandler windowInject, KillHandler kill,
         IntrospectHandler introspect, SignalHandler signal, AnswerUserHandler answerUser,
+        RenameHandler rename,
         ILogger<MessageHandler> logger, string authToken)
     {
         _spawn = spawn;
         _inject = inject;
+        _windowInject = windowInject;
         _kill = kill;
         _introspect = introspect;
         _signal = signal;
         _answerUser = answerUser;
+        _rename = rename;
         _logger = logger;
         _authToken = authToken;
     }
@@ -125,6 +130,9 @@ public sealed class MessageHandler
                     case KhMessageType.Inject:
                         await _inject.HandleAsync(envelope, send, ct);
                         break;
+                    case KhMessageType.WindowInject:
+                        await _windowInject.HandleAsync(envelope, send, ct);
+                        break;
                     case KhMessageType.Kill:
                         await _kill.HandleAsync(envelope, send, ct);
                         break;
@@ -136,6 +144,9 @@ public sealed class MessageHandler
                         break;
                     case KhMessageType.AnswerUser:
                         await _answerUser.HandleAsync(envelope, send, ct);
+                        break;
+                    case KhMessageType.Rename:
+                        await _rename.HandleAsync(envelope, send, ct);
                         break;
                     default:
                         _logger.LogDebug("KH: Unknown message type: {Type}", envelope.Type);

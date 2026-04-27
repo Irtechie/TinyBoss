@@ -27,10 +27,12 @@ public static class KhMessageType
     public const string Hello       = "hello";
     public const string Spawn       = "spawn";
     public const string Inject      = "inject";
+    public const string WindowInject = "window_inject";
     public const string Kill        = "kill";
     public const string Signal      = "signal";
     public const string Introspect  = "introspect";
     public const string AnswerUser  = "answer_user";
+    public const string Rename      = "rename";
 
     // KH → Logos
     public const string HelloAck        = "hello_ack";
@@ -56,6 +58,14 @@ public sealed record SpawnPayload(
 
 public sealed record InjectPayload(
     [property: JsonPropertyName("text")] string Text
+);
+
+public sealed record WindowInjectPayload(
+    [property: JsonPropertyName("text")]           string Text,
+    [property: JsonPropertyName("hwnd")]           string? Hwnd,
+    [property: JsonPropertyName("slot")]           int? Slot,
+    [property: JsonPropertyName("monitor_handle")] string? MonitorHandle,
+    [property: JsonPropertyName("source_surface")] string? SourceSurface
 );
 
 public sealed record AnswerUserPayload(
@@ -92,6 +102,26 @@ public sealed record SessionInfo(
     [property: JsonPropertyName("running")]        bool Running
 );
 
+public sealed record TiledWindowInfo(
+    [property: JsonPropertyName("device_name")]    string DeviceName,
+    [property: JsonPropertyName("monitor_handle")] string MonitorHandle,
+    [property: JsonPropertyName("slot")]           int Slot,
+    [property: JsonPropertyName("hwnd")]           string Hwnd,
+    [property: JsonPropertyName("pid")]            int Pid,
+    [property: JsonPropertyName("session_id")]     string? SessionId,
+    [property: JsonPropertyName("alias")]          string? Alias,
+    [property: JsonPropertyName("title")]          string Title,
+    [property: JsonPropertyName("running")]        bool Running,
+    [property: JsonPropertyName("text_tail")]      string[] TextTail,
+    [property: JsonPropertyName("captured_at")]    string? CapturedAt
+);
+
 public sealed record IntrospectReplyPayload(
-    [property: JsonPropertyName("sessions")] SessionInfo[] Sessions
+    [property: JsonPropertyName("sessions")]      SessionInfo[] Sessions,
+    [property: JsonPropertyName("tiled_windows")] TiledWindowInfo[] TiledWindows
+);
+
+public sealed record RenamePayload(
+    [property: JsonPropertyName("slot")]  int Slot,
+    [property: JsonPropertyName("alias")] string Alias
 );
