@@ -1,13 +1,17 @@
 ---
 title: "feat: Voice Input, Window Tiling & System Tray"
 type: feat
-status: active
+status: historical
 date: 2026-04-25
 origin: docs/brainstorms/2026-04-25-voice-tiling-tray-brainstorm.md
 deepened: 2026-04-25
 ---
 
 # feat: Voice Input, Window Tiling & System Tray
+
+> Historical plan. Do not use unchecked boxes in this file as active work.
+> Current cross-app work is tracked by PitBoss in
+> `C:\ProgramData\PitBoss\pitboss.backlog.json`.
 
 ## Enhancement Summary
 

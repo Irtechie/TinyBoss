@@ -1,13 +1,17 @@
 ---
 title: "feat: Auto-grow terminal tiling + window rename"
 type: feat
-status: active
+status: historical
 date: 2026-04-25
 origin: docs/brainstorms/2026-04-25-window-rename-brainstorm.md
 deepened: 2026-04-25
 ---
 
 # feat: Auto-grow Terminal Tiling + Window Rename
+
+> Historical plan. Do not use unchecked boxes in this file as active work.
+> Current cross-app work is tracked by PitBoss in
+> `C:\ProgramData\PitBoss\pitboss.backlog.json`.
 
 ## Enhancement Summary
 

@@ -79,3 +79,6 @@ Verification:
 
 - Add full target classification and verification ladder after this delivery-timing fix is proven live.
 - Add a controlled GUI injection harness for clipboard/UIA/SendInput comparisons.
+
+These follow-ups are now represented in the PitBoss runtime backlog as
+`tinyboss / voice / verification`.
