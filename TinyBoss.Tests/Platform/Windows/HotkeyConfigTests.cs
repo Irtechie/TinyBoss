@@ -18,6 +18,15 @@ public sealed class HotkeyConfigTests
     }
 
     [Fact]
+    public void VoiceDefaultUsesRightAlt()
+    {
+        var config = new TinyBossConfig();
+
+        Assert.Equal(0, config.VoiceModifiers);
+        Assert.Equal(0xA5, config.VoiceKey);
+    }
+
+    [Fact]
     public void ConflictHelperRejectsDuplicateHotkeys()
     {
         var first = new HotkeyPreset("first", 0x0006, 0x47);

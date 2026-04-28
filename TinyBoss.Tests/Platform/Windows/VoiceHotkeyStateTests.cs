@@ -7,6 +7,7 @@ public sealed class VoiceHotkeyStateTests
 {
     private const int MOD_SHIFT = 0x0004;
     private const int VK_SHIFT = 0x10;
+    private const int VK_MENU = 0x12;
     private const int VK_RSHIFT = 0xA1;
     private const int VK_RMENU = 0xA5;
     private const int VK_OEM_3 = 0xC0;
@@ -51,6 +52,20 @@ public sealed class VoiceHotkeyStateTests
 
         var down = state.ProcessKeyEvent(VK_RMENU, isKeyDown: true, modifiers: 0, key: VK_RMENU);
         var up = state.ProcessKeyEvent(VK_RMENU, isKeyDown: false, modifiers: 0, key: VK_RMENU);
+
+        Assert.True(down.Suppress);
+        Assert.True(down.Started);
+        Assert.True(up.Suppress);
+        Assert.True(up.Stopped);
+    }
+
+    [Fact]
+    public void RightAltVoiceKeySuppressesGenericAltAlias()
+    {
+        var state = new VoiceHotkeyState();
+
+        var down = state.ProcessKeyEvent(VK_MENU, isKeyDown: true, modifiers: 0, key: VK_RMENU);
+        var up = state.ProcessKeyEvent(VK_MENU, isKeyDown: false, modifiers: 0, key: VK_RMENU);
 
         Assert.True(down.Suppress);
         Assert.True(down.Started);

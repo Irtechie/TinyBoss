@@ -27,7 +27,7 @@ public sealed class TinyBossConfig
     public int GridSize { get; set; } = 4;
 
     // ── Hotkeys (virtual key codes + modifiers) ──────────────────────────────
-    public int VoiceModifiers { get; set; } = 0;      // No modifier — standalone key
+    public int VoiceModifiers { get; set; } = 0;      // No modifier - standalone key
     public int VoiceKey { get; set; } = 0xA5;           // Right Alt (VK_RMENU)
 
     public int TileModifiers { get; set; } = 0x0002 | 0x0004;   // Ctrl+Shift

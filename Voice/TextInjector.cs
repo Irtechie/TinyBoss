@@ -10,7 +10,8 @@ namespace TinyBoss.Voice;
 
 /// <summary>
 /// Injects transcribed voice text into the target window.
-/// Priority: managed session stdin -> clipboard paste for focused text -> SendInput keyboard simulation.
+/// Priority: managed session stdin -> terminal console input -> clipboard paste for focused text.
+/// Never falls back to character-by-character SendInput for unmanaged windows.
 /// </summary>
 [SupportedOSPlatform("windows")]
 public sealed class TextInjector
@@ -20,8 +21,6 @@ public sealed class TextInjector
     private const int ClipboardRestoreDelayMs = 1500;
     private const int ClipboardOpenAttempts = 24;
     private const int ClipboardOpenRetryDelayMs = 25;
-    private const int SendInputBatchChars = 128;
-    private const int SendInputFallbackMaxChars = 24;
     private const int ErrorInvalidWindowHandle = 1400;
     private static readonly object ClipboardOwnerLock = new();
     private static nint _clipboardOwnerWindow;
@@ -34,7 +33,7 @@ public sealed class TextInjector
 
     /// <summary>
     /// Inject text into the specified session, or the focused window if sessionId is null.
-    /// Managed sessions use stdin; regular windows get keyboard simulation via SendInput.
+    /// Managed sessions use stdin; regular windows get console input or clipboard paste.
     /// Returns (success, message) describing the result.
     /// </summary>
     public async Task<(bool Success, string Message)> InjectAsync(string text, string? targetSessionId, CancellationToken ct = default)
@@ -52,10 +51,12 @@ public sealed class TextInjector
             session = FindFocusedManagedSession();
             if (session is null)
             {
-                // Fallback: type into whatever window is focused via keyboard simulation.
-                TypeViaKeyboard(text);
-                _logger.LogInformation("KH: Voice typed {N} chars via SendInput into focused window", text.Length);
-                return (true, "Typed into focused window");
+                var paste = await AppendViaFocusedWindowAsync(text, ct);
+                _logger.LogInformation("KH: Focused inject success={Success} chars={N} method={Method}",
+                    paste.Success, text.Length, paste.Message);
+                return paste.Success
+                    ? (true, $"Pasted into focused window ({paste.Message})")
+                    : (false, paste.Message);
             }
         }
 
@@ -201,47 +202,6 @@ public sealed class TextInjector
         }
     }
 
-    /// <summary>
-    /// Type text into the focused window using SendInput with Unicode characters.
-    /// Does NOT send Enter — user reviews transcription and confirms.
-    /// </summary>
-    public void TypeViaKeyboard(string text, bool moveToEnd = false)
-    {
-        if (moveToEnd)
-            SendVirtualKey(VK_END);
-
-        var offset = 0;
-        while (offset < text.Length)
-        {
-            var charCount = Math.Min(SendInputBatchChars, text.Length - offset);
-            var inputs = new INPUT[charCount * 2];
-
-            for (var i = 0; i < charCount; i++)
-            {
-                var c = text[offset + i];
-                var inputIndex = i * 2;
-                inputs[inputIndex] = new INPUT
-                {
-                    type = INPUT_KEYBOARD,
-                    wScan = c,
-                    dwFlags = KEYEVENTF_UNICODE
-                };
-                inputs[inputIndex + 1] = new INPUT
-                {
-                    type = INPUT_KEYBOARD,
-                    wScan = c,
-                    dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP
-                };
-            }
-
-            SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>());
-            offset += charCount;
-
-            if (offset < text.Length)
-                Thread.Sleep(1);
-        }
-    }
-
     private async Task<FocusedAppendAttempt> AppendViaFocusedWindowAsync(string text, CancellationToken ct)
     {
         var target = CaptureFocusedWindowTarget();
@@ -253,30 +213,18 @@ public sealed class TextInjector
             _logger.LogInformation(
                 "KH: Voice console input buffer failed for {N} chars target={Target}: {Reason}",
                 text.Length, target.Description, consoleMessage);
-
-            TypeViaKeyboard(text, moveToEnd: true);
-            await Task.CompletedTask;
-            return new FocusedAppendAttempt(
-                true,
-                $"terminal SendInput fallback after console input failed ({consoleMessage}); target={target.Description}");
         }
 
-        var paste = TryPasteViaClipboard(text, moveToEnd: true);
+        var paste = TryPasteViaClipboard(text);
         if (!paste.Success)
         {
             _logger.LogInformation(
                 "KH: Voice clipboard paste failed for {N} chars target={Target}: {Reason}",
                 text.Length, target.Description, paste.Method);
 
-            if (text.Length > SendInputFallbackMaxChars)
-            {
-                return new FocusedAppendAttempt(
-                    false,
-                    $"Clipboard paste failed ({paste.Method}); transcript preserved instead of slow SendInput; target={target.Description}");
-            }
-
-            TypeViaKeyboard(text, moveToEnd: true);
-            return new FocusedAppendAttempt(true, $"batched SendInput after clipboard failure ({paste.Method}); target={target.Description}");
+            return new FocusedAppendAttempt(
+                false,
+                $"Clipboard paste failed ({paste.Method}); no keyboard fallback used; target={target.Description}");
         }
 
         await Task.Delay(250, ct);
@@ -392,7 +340,7 @@ public sealed class TextInjector
         }
     };
 
-    private static ClipboardPasteAttempt TryPasteViaClipboard(string text, bool moveToEnd)
+    private static ClipboardPasteAttempt TryPasteViaClipboard(string text)
     {
         string? previousText = null;
         var hadText = TryReadClipboardText(out previousText);
@@ -405,8 +353,6 @@ public sealed class TextInjector
             return new ClipboardPasteAttempt(false, setFailure);
         }
 
-        if (moveToEnd)
-            SendVirtualKey(VK_END);
         var pasteInput = SendPasteChord();
         if (!pasteInput.Success)
         {
@@ -430,14 +376,6 @@ public sealed class TextInjector
             ? "clipboard/ctrl+v (replaced non-text clipboard)"
             : "clipboard/ctrl+v";
         return new ClipboardPasteAttempt(true, method);
-    }
-
-    private static void SendVirtualKey(ushort key)
-    {
-        var inputs = new INPUT[2];
-        inputs[0] = new INPUT { type = INPUT_KEYBOARD, wVk = key };
-        inputs[1] = new INPUT { type = INPUT_KEYBOARD, wVk = key, dwFlags = KEYEVENTF_KEYUP };
-        SendInput(2, inputs, Marshal.SizeOf<INPUT>());
     }
 
     private static PasteInputAttempt SendPasteChord()
@@ -703,13 +641,11 @@ public sealed class TextInjector
         return new FocusedWindowTarget(hwnd, pid, processName, className, isTerminal);
     }
 
-    // ── SendInput P/Invoke (win-x64) ─────────────────────────────────────────
+    // ── Console input / clipboard paste P/Invoke (win-x64) ──────────────────
 
     private const uint INPUT_KEYBOARD = 1;
-    private const uint KEYEVENTF_UNICODE = 0x0004;
     private const uint KEYEVENTF_KEYUP = 0x0002;
     private const ushort KEY_EVENT = 0x0001;
-    private const ushort VK_END = 0x23;
     private const ushort VK_CONTROL = 0x11;
     private const ushort VK_PACKET = 0xE7;
     private const ushort VK_V = 0x56;

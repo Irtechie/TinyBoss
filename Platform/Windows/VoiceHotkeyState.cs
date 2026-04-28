@@ -106,9 +106,9 @@ public sealed class VoiceHotkeyState
     {
         return key switch
         {
-            VK_SHIFT => IsModifierDown(MOD_SHIFT),
-            VK_CONTROL => IsModifierDown(MOD_CONTROL),
-            VK_MENU => IsModifierDown(MOD_ALT),
+            VK_SHIFT or VK_LSHIFT or VK_RSHIFT => IsModifierDown(MOD_SHIFT),
+            VK_CONTROL or VK_LCONTROL or VK_RCONTROL => IsModifierDown(MOD_CONTROL),
+            VK_MENU or VK_LMENU or VK_RMENU => IsModifierDown(MOD_ALT),
             _ => _downKeys.Contains(key),
         };
     }
@@ -121,6 +121,18 @@ public sealed class VoiceHotkeyState
             return vkCode is VK_CONTROL or VK_LCONTROL or VK_RCONTROL;
         if (key == VK_MENU)
             return vkCode is VK_MENU or VK_LMENU or VK_RMENU;
+        if (key == VK_LSHIFT)
+            return vkCode is VK_SHIFT or VK_LSHIFT;
+        if (key == VK_RSHIFT)
+            return vkCode is VK_SHIFT or VK_RSHIFT;
+        if (key == VK_LCONTROL)
+            return vkCode is VK_CONTROL or VK_LCONTROL;
+        if (key == VK_RCONTROL)
+            return vkCode is VK_CONTROL or VK_RCONTROL;
+        if (key == VK_LMENU)
+            return vkCode is VK_MENU or VK_LMENU;
+        if (key == VK_RMENU)
+            return vkCode is VK_MENU or VK_RMENU;
 
         return vkCode == key;
     }
@@ -136,6 +148,7 @@ public sealed class VoiceHotkeyState
             _ => false,
         };
     }
+
 }
 
 public readonly record struct VoiceHotkeyTransition(bool Suppress, bool Started, bool Stopped);

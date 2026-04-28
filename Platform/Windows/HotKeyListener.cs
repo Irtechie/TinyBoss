@@ -6,7 +6,7 @@ namespace TinyBoss.Platform.Windows;
 
 /// <summary>
 /// Listens for global hotkeys via a Win32 message-only window (HWND_MESSAGE).
-/// Works without any visible Avalonia window — perfect for tray-only state.
+/// Works without any visible Avalonia window - perfect for tray-only state.
 /// </summary>
 [SupportedOSPlatform("windows")]
 public sealed class HotKeyListener : IDisposable
@@ -135,7 +135,7 @@ public sealed class HotKeyListener : IDisposable
                 UnregisterHotKey(_hwnd, HOTKEY_TILE);
                 if (!RegisterHotKey(_hwnd, HOTKEY_TILE, newTileMods | MOD_NOREPEAT, newTileKey))
                 {
-                    _logger.LogWarning("KH: New tile hotkey failed — rolling back");
+                    _logger.LogWarning("KH: New tile hotkey failed - rolling back");
                     RegisterHotKey(_hwnd, HOTKEY_TILE, lastTileMods | MOD_NOREPEAT, lastTileKey);
                 }
                 else
@@ -148,7 +148,7 @@ public sealed class HotKeyListener : IDisposable
                 UnregisterHotKey(_hwnd, HOTKEY_REBALANCE);
                 if (!RegisterHotKey(_hwnd, HOTKEY_REBALANCE, newRebalMods | MOD_NOREPEAT, newRebalKey))
                 {
-                    _logger.LogWarning("KH: New rebalance hotkey failed — rolling back");
+                    _logger.LogWarning("KH: New rebalance hotkey failed - rolling back");
                     RegisterHotKey(_hwnd, HOTKEY_REBALANCE, lastRebalMods | MOD_NOREPEAT, lastRebalKey);
                 }
                 else
@@ -159,6 +159,8 @@ public sealed class HotKeyListener : IDisposable
                 }
 
                 _voiceState.Reset();
+                voiceDown = false;
+                voiceReleaseMisses = 0;
             }
 
             if (PeekMessage(out var msg, _hwnd, 0, 0, PM_REMOVE))
@@ -236,7 +238,7 @@ public sealed class HotKeyListener : IDisposable
         if (_keyboardHook == nint.Zero)
         {
             var err = Marshal.GetLastWin32Error();
-            _logger.LogError("KH: Voice keyboard hook failed (error {Err}) — falling back to non-suppressing polling", err);
+            _logger.LogError("KH: Voice keyboard hook failed (error {Err}) - falling back to non-suppressing polling", err);
             HotKeyDiag("VOICE_HOOK_FAIL error={0}", err);
         }
         else
@@ -265,6 +267,15 @@ public sealed class HotKeyListener : IDisposable
                         isKeyDown,
                         _config.VoiceModifiers,
                         _config.VoiceKey);
+
+                    HotKeyDiag(
+                        "VOICE_KEY_EVENT vk=0x{0:X} {1} flags=0x{2:X} started={3} stopped={4} suppress={5}",
+                        data.vkCode,
+                        isKeyDown ? "down" : "up",
+                        data.flags,
+                        transition.Started,
+                        transition.Stopped,
+                        transition.Suppress);
 
                     if (transition.Started)
                         ThreadPool.QueueUserWorkItem(_ => VoiceKeyDown?.Invoke());
@@ -305,13 +316,25 @@ public sealed class HotKeyListener : IDisposable
             return vkCode is VK_CONTROL or VK_LCONTROL or VK_RCONTROL;
         if (key == VK_MENU)
             return vkCode is VK_MENU or VK_LMENU or VK_RMENU;
+        if (key == VK_LSHIFT)
+            return vkCode is VK_SHIFT or VK_LSHIFT;
+        if (key == VK_RSHIFT)
+            return vkCode is VK_SHIFT or VK_RSHIFT;
+        if (key == VK_LCONTROL)
+            return vkCode is VK_CONTROL or VK_LCONTROL;
+        if (key == VK_RCONTROL)
+            return vkCode is VK_CONTROL or VK_RCONTROL;
+        if (key == VK_LMENU)
+            return vkCode is VK_MENU or VK_LMENU;
+        if (key == VK_RMENU)
+            return vkCode is VK_MENU or VK_RMENU;
 
         return vkCode == key;
     }
 
     private bool IsComboHeld(int modifiers, int key)
     {
-        if ((GetAsyncKeyState(key) & 0x8000) == 0) return false;
+        if (!IsKeyHeld(key)) return false;
         if ((modifiers & MOD_CONTROL) != 0 && (GetAsyncKeyState(VK_CONTROL) & 0x8000) == 0) return false;
         if ((modifiers & MOD_SHIFT) != 0 && (GetAsyncKeyState(VK_SHIFT) & 0x8000) == 0) return false;
         if ((modifiers & MOD_ALT) != 0 && (GetAsyncKeyState(VK_MENU) & 0x8000) == 0) return false;
@@ -321,12 +344,26 @@ public sealed class HotKeyListener : IDisposable
         return true;
     }
 
+    private static bool IsKeyHeld(int key)
+    {
+        if ((GetAsyncKeyState(key) & 0x8000) != 0)
+            return true;
+
+        return key switch
+        {
+            VK_LSHIFT or VK_RSHIFT => (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0,
+            VK_LCONTROL or VK_RCONTROL => (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0,
+            VK_LMENU or VK_RMENU => (GetAsyncKeyState(VK_MENU) & 0x8000) != 0,
+            _ => false,
+        };
+    }
+
     private void RegisterHotKeyWithLog(int id, int modifiers, int vk, string label)
     {
         if (!RegisterHotKey(_hwnd, id, modifiers, vk))
         {
             var err = Marshal.GetLastWin32Error();
-            _logger.LogError("KH: RegisterHotKey failed for {Label} (error {Err}) — hotkey may be in use", label, err);
+            _logger.LogError("KH: RegisterHotKey failed for {Label} (error {Err}) - hotkey may be in use", label, err);
         }
         else
         {
@@ -370,7 +407,7 @@ public sealed class HotKeyListener : IDisposable
         catch { }
     }
 
-    // ── PInvoke ──────────────────────────────────────────────────────────────
+    // PInvoke
 
     private static readonly nint HWND_MESSAGE = new(-3);
     private const uint PM_REMOVE = 0x0001;
