@@ -222,6 +222,74 @@ public sealed class TilingCoordinator : IDisposable
         return true;
     }
 
+    public bool SwapDetachedWindowWithSlot(
+        nint draggedHwnd,
+        nint targetMonitorHandle,
+        int targetSlot,
+        TileLocation sourceLocation,
+        string? draggedSessionId = null)
+    {
+        nint sourceMonitor;
+        nint targetMonitor;
+
+        lock (_lock)
+        {
+            if (!IsWindow(draggedHwnd))
+            {
+                _logger.LogWarning("KH: Cannot swap invalid HWND {Hwnd}", draggedHwnd);
+                return false;
+            }
+
+            var targetGrid = GetOrCreateGridLocked(targetMonitorHandle);
+            if (!targetGrid.Slots.TryGetValue(targetSlot, out var targetTile))
+                return false;
+
+            if (targetTile.Hwnd == draggedHwnd)
+                return false;
+
+            var sourceGrid = GetOrCreateGridLocked(sourceLocation.MonitorHandle);
+            var sourceSlot = sourceLocation.Slot;
+            if (sourceGrid.Slots.ContainsKey(sourceSlot))
+            {
+                sourceSlot = FindNextEmptySlotLocked(sourceGrid, PageMovePlanner.MaxWindowsPerGrid);
+                if (sourceSlot < 0)
+                    return false;
+            }
+
+            RemoveHwndLocked(draggedHwnd, clearAlias: false);
+            _detachedTiles.Remove(draggedHwnd);
+            _detachedTiles.Remove(targetTile.Hwnd);
+
+            GetWindowThreadProcessId(draggedHwnd, out int draggedPid);
+            var draggedAlias = sourceLocation.TileSlot.Alias ?? _aliasMemory.Get(draggedHwnd);
+            var displacedAlias = targetTile.Alias ?? _aliasMemory.Get(targetTile.Hwnd);
+
+            targetGrid.Slots.Remove(targetSlot);
+            sourceGrid.Slots[sourceSlot] = targetTile with { Alias = displacedAlias };
+            targetGrid.Slots[targetSlot] = new TileSlot(
+                draggedHwnd,
+                draggedPid,
+                draggedSessionId ?? sourceLocation.TileSlot.SessionId,
+                draggedAlias);
+
+            RegisterProcessExitLocked(targetTile.Hwnd, targetTile.ProcessId);
+            RegisterProcessExitLocked(draggedHwnd, draggedPid);
+            SetActiveGridLocked(targetGrid);
+            sourceMonitor = sourceGrid.MonitorHandle;
+            targetMonitor = targetGrid.MonitorHandle;
+
+            DiagLog(
+                $"SLOT_SWAPPED source={sourceGrid.DeviceName}:{sourceSlot} target={targetGrid.DeviceName}:{targetSlot} dragged=0x{draggedHwnd:X} displaced=0x{targetTile.Hwnd:X}");
+        }
+
+        SlotsChanged?.Invoke();
+        if (sourceMonitor != nint.Zero)
+            PositionAll(sourceMonitor);
+        if (targetMonitor != nint.Zero && targetMonitor != sourceMonitor)
+            PositionAll(targetMonitor);
+        return true;
+    }
+
     public bool RemoveWindow(nint hwnd)
     {
         nint reflowMonitor = nint.Zero;
@@ -477,13 +545,14 @@ public sealed class TilingCoordinator : IDisposable
 
     public void OnDragStarted() => _dragInProgress = true;
 
-    public void OnDragEnded(nint monitorHandle)
+    public void OnDragEnded(nint monitorHandle, bool applyPendingReflow = true)
     {
         _dragInProgress = false;
         if (_reflowPending)
         {
             _reflowPending = false;
-            ScheduleReflow(_pendingReflowMonitor != nint.Zero ? _pendingReflowMonitor : monitorHandle);
+            if (applyPendingReflow)
+                ScheduleReflow(_pendingReflowMonitor != nint.Zero ? _pendingReflowMonitor : monitorHandle);
             _pendingReflowMonitor = nint.Zero;
         }
     }

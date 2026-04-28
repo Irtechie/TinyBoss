@@ -27,6 +27,7 @@ public class App : Application
     private nint _currentMonitor;
     private Dictionary<int, RECT>? _currentPaneBounds;
     private PageMoveContext? _pageMove;
+    private TileLocation? _dragSourceLocation;
 
     private sealed record PageMoveContext(string SourceDevice, nint SourceMonitor, nint Hwnd);
 
@@ -347,6 +348,7 @@ public class App : Application
         _dragHwnd = hwnd;
         _dragOverlayActive = false;
         _pageMove = null;
+        _dragSourceLocation = null;
 
         try
         {
@@ -359,6 +361,7 @@ public class App : Application
             // Prune dead windows so grid size reflects reality
             var pruned = _tiling?.PruneDeadWindows() ?? false;
             var location = _tiling?.FindLocationForHwnd(hwnd);
+            _dragSourceLocation = location;
             var slotBefore = location?.Slot ?? -1;
             Diag($"  pruned={pruned} existingSlot={slotBefore} source={location?.DeviceName ?? ""}");
 
@@ -401,6 +404,7 @@ public class App : Application
             _dragOverlayActive = false;
             _dragHwnd = nint.Zero;
             _pageMove = null;
+            _dragSourceLocation = null;
         }
     }
 
@@ -485,9 +489,12 @@ public class App : Application
     {
         var wasActive = _dragOverlayActive;
         var pageMove = _pageMove;
+        var sourceLocation = _dragSourceLocation;
+        var handledDrop = false;
         _dragHwnd = nint.Zero;
         _dragOverlayActive = false;
         _pageMove = null;
+        _dragSourceLocation = null;
 
         Diag($"DRAG_END hwnd=0x{hwnd:X} pos=({screenX},{screenY}) wasActive={wasActive} pageMove={pageMove is not null} hasOverlay={_overlay is not null} hasBounds={_currentPaneBounds is not null}");
 
@@ -496,6 +503,7 @@ public class App : Application
             if (pageMove is not null)
             {
                 HandlePageMoveDrop(pageMove, screenX, screenY);
+                handledDrop = true;
                 return;
             }
 
@@ -514,12 +522,37 @@ public class App : Application
 
             if (slot >= 0 && _tiling is not null)
             {
+                string? sessionId = null;
+                if (_registry is not null)
+                {
+                    TilingCoordinator.GetWindowThreadProcessId(hwnd, out int pid);
+                    var session = _registry.GetSnapshot().FirstOrDefault(s => s.Process.Id == pid);
+                    sessionId = session?.SessionId;
+                }
+
                 var slotOccupied = _tiling.IsSlotOccupied(_currentMonitor, slot);
                 Diag($"  slotOccupied={slotOccupied}");
                 if (slotOccupied)
                 {
+                    if (sourceLocation is not null &&
+                        _tiling.SwapDetachedWindowWithSlot(hwnd, _currentMonitor, slot, sourceLocation, sessionId))
+                    {
+                        Diag($"  SWAPPED source={sourceLocation.DeviceName}:{sourceLocation.Slot} targetSlot={slot} mon=0x{_currentMonitor:X}");
+                        handledDrop = true;
+                        Dispatcher.UIThread.Post(() => RefreshOverlayThenDismiss(_currentMonitor));
+                        return;
+                    }
+
+                    if (sourceLocation is not null)
+                    {
+                        Diag("  swap failed - restoring detached window");
+                        _tiling.RestoreDetachedWindow(hwnd);
+                        Dispatcher.UIThread.Post(DismissOverlay);
+                        return;
+                    }
+
                     var empty = _tiling.FindNextEmptySlot(_currentMonitor, _tiling.GetGridSizeForNextWindow(_currentMonitor));
-                    Diag($"  redirect to empty={empty}");
+                    Diag($"  no source slot - redirect to empty={empty}");
                     if (empty < 0)
                     {
                         _tiling.RestoreDetachedWindow(hwnd);
@@ -529,17 +562,12 @@ public class App : Application
                     slot = empty;
                 }
 
-                string? sessionId = null;
-                if (_registry is not null)
-                {
-                    TilingCoordinator.GetWindowThreadProcessId(hwnd, out int pid);
-                    var session = _registry.GetSnapshot().FirstOrDefault(s => s.Process.Id == pid);
-                    sessionId = session?.SessionId;
-                }
-
                 _tiling.AssignToSlot(slot, hwnd, _currentMonitor, sessionId);
                 Diag($"  ASSIGNED slot={slot} mon=0x{_currentMonitor:X} gridSize={_tiling.GetGridSize(_currentMonitor)} total={_tiling.GetOccupiedCount(_currentMonitor)}");
                 _tiling.PositionAll(_currentMonitor);
+                if (sourceLocation is not null && sourceLocation.MonitorHandle != _currentMonitor)
+                    _tiling.Rebalance(sourceLocation.MonitorHandle);
+                handledDrop = true;
 
                 Dispatcher.UIThread.Post(() => RefreshOverlayThenDismiss(_currentMonitor));
             }
@@ -560,7 +588,7 @@ public class App : Application
         finally
         {
             var endMonitor = _currentMonitor != nint.Zero ? _currentMonitor : pageMove?.SourceMonitor ?? nint.Zero;
-            _tiling?.OnDragEnded(endMonitor);
+            _tiling?.OnDragEnded(endMonitor, applyPendingReflow: !handledDrop);
         }
     }
 
