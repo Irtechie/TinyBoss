@@ -10,7 +10,7 @@ namespace TinyBoss.Voice;
 
 /// <summary>
 /// Injects transcribed voice text into the target window.
-/// Priority: managed session stdin -> terminal console input -> clipboard paste for focused text.
+/// Priority: managed session stdin -> clipboard paste for focused text.
 /// Never falls back to character-by-character SendInput for unmanaged windows.
 /// </summary>
 [SupportedOSPlatform("windows")]
@@ -21,6 +21,9 @@ public sealed class TextInjector
     private const int ClipboardRestoreDelayMs = 1500;
     private const int ClipboardOpenAttempts = 24;
     private const int ClipboardOpenRetryDelayMs = 25;
+    private const int WindowFocusSettleDelayMs = 50;
+    private const int PasteDeliveryDelayMs = 75;
+    private const int MaxConsoleInputChars = 512;
     private const int ErrorInvalidWindowHandle = 1400;
     private static readonly object ClipboardOwnerLock = new();
     private static nint _clipboardOwnerWindow;
@@ -133,7 +136,7 @@ public sealed class TextInjector
             return (false, message);
         }
 
-        await Task.Delay(120, ct);
+        await Task.Delay(WindowFocusSettleDelayMs, ct);
         var focused = GetForegroundWindow();
         if (focused != hwnd)
         {
@@ -205,7 +208,7 @@ public sealed class TextInjector
     private async Task<FocusedAppendAttempt> AppendViaFocusedWindowAsync(string text, CancellationToken ct)
     {
         var target = CaptureFocusedWindowTarget();
-        if (target.IsTerminal)
+        if (target.IsTerminal && UseConsoleInputBuffer() && text.Length <= MaxConsoleInputChars)
         {
             if (TryWriteConsoleInputBuffer(text, target, out var consoleMessage))
                 return new FocusedAppendAttempt(true, consoleMessage);
@@ -213,6 +216,12 @@ public sealed class TextInjector
             _logger.LogInformation(
                 "KH: Voice console input buffer failed for {N} chars target={Target}: {Reason}",
                 text.Length, target.Description, consoleMessage);
+        }
+        else if (target.IsTerminal)
+        {
+            _logger.LogDebug(
+                "KH: Skipping console input buffer for {N} chars target={Target}; using clipboard paste",
+                text.Length, target.Description);
         }
 
         var paste = TryPasteViaClipboard(text);
@@ -227,8 +236,17 @@ public sealed class TextInjector
                 $"Clipboard paste failed ({paste.Method}); no keyboard fallback used; target={target.Description}");
         }
 
-        await Task.Delay(250, ct);
+        await Task.Delay(PasteDeliveryDelayMs, ct);
         return new FocusedAppendAttempt(true, $"{paste.Method}; target={target.Description}");
+    }
+
+    private static bool UseConsoleInputBuffer()
+    {
+        var value = Environment.GetEnvironmentVariable("TINYBOSS_USE_CONSOLE_INPUT");
+        return value is not null &&
+               (value.Equals("1", StringComparison.OrdinalIgnoreCase) ||
+                value.Equals("true", StringComparison.OrdinalIgnoreCase) ||
+                value.Equals("yes", StringComparison.OrdinalIgnoreCase));
     }
 
     private static bool TryWriteConsoleInputBuffer(
