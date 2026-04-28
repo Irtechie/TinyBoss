@@ -208,7 +208,7 @@ public sealed class TextInjector
     private async Task<FocusedAppendAttempt> AppendViaFocusedWindowAsync(string text, CancellationToken ct)
     {
         var target = CaptureFocusedWindowTarget();
-        if (target.IsTerminal && UseConsoleInputBuffer() && text.Length <= MaxConsoleInputChars)
+        if (target.IsTerminal && ShouldUseConsoleInputBuffer(target, text))
         {
             if (TryWriteConsoleInputBuffer(text, target, out var consoleMessage))
                 return new FocusedAppendAttempt(true, consoleMessage);
@@ -240,7 +240,18 @@ public sealed class TextInjector
         return new FocusedAppendAttempt(true, $"{paste.Method}; target={target.Description}");
     }
 
-    private static bool UseConsoleInputBuffer()
+    private static bool ShouldUseConsoleInputBuffer(FocusedWindowTarget target, string text)
+    {
+        if (!target.ClassName.Equals("ConsoleWindowClass", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        if (text.Length > MaxConsoleInputChars && !UseConsoleInputBufferOverride())
+            return false;
+
+        return true;
+    }
+
+    private static bool UseConsoleInputBufferOverride()
     {
         var value = Environment.GetEnvironmentVariable("TINYBOSS_USE_CONSOLE_INPUT");
         return value is not null &&
