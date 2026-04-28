@@ -9,6 +9,7 @@ public partial class RenameDialog : Window
     private readonly TextBox _aliasInput;
 
     public string? AliasResult { get; private set; }
+    public bool Accepted { get; private set; }
 
     public RenameDialog() : this("")
     {
@@ -45,9 +46,8 @@ public partial class RenameDialog : Window
 
     private void Accept()
     {
-        var text = _aliasInput.Text?.Trim();
-        if (!string.IsNullOrEmpty(text))
-            AliasResult = text;
+        Accepted = true;
+        AliasResult = _aliasInput.Text?.Trim() ?? "";
         Close();
     }
 }

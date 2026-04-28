@@ -14,6 +14,7 @@ $regPath    = "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\TinyBos
 $desktop    = [Environment]::GetFolderPath("Desktop")
 $startMenu  = Join-Path ([Environment]::GetFolderPath("StartMenu")) "Programs"
 $lnkName    = "TinyBoss.lnk"
+$taskName   = "TinyBoss Elevated Startup"
 
 if (-not $Quiet) {
     $answer = Read-Host "Uninstall TinyBoss? (Y/N)"
@@ -26,6 +27,13 @@ if (-not $Quiet) {
 # Kill running instance
 Get-Process -Name TinyBoss -ErrorAction SilentlyContinue | Stop-Process -Force
 Start-Sleep -Milliseconds 500
+
+# Remove elevated startup task
+schtasks.exe /Query /TN $taskName *> $null
+if ($LASTEXITCODE -eq 0) {
+    schtasks.exe /Delete /TN $taskName /F | Out-Null
+    Write-Host "Removed scheduled task $taskName" -ForegroundColor Gray
+}
 
 # Remove shortcuts
 foreach ($dir in @($desktop, $startMenu)) {

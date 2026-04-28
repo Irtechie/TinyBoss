@@ -60,6 +60,15 @@ public partial class InstallerViewModel : ObservableObject
             Checker = ct => AppInstaller.DetectRegistration(ct),
             Installer = (p, ct) => AppInstaller.RegisterApp(p, ct),
         });
+        Checks.Add(new CheckItem
+        {
+            Id = "startup",
+            Name = "Elevated Startup",
+            Description = "Start TinyBoss elevated at Windows logon",
+            DependsOn = ["copy"],
+            Checker = ct => AppInstaller.DetectElevatedStartup(ct),
+            Installer = (p, ct) => AppInstaller.RegisterElevatedStartup(p, ct),
+        });
 
         // CLI tools (only when user opts in)
         if (InstallClis)

@@ -22,6 +22,7 @@ public static class AppInstaller
 
     private const string AppExeName = "TinyBoss.exe";
     private const string ShortcutName = "TinyBoss.lnk";
+    private const string StartupTaskName = "TinyBoss Elevated Startup";
 
     // ── Detection ────────────────────────────────────────────────────────
 
@@ -59,6 +60,18 @@ public static class AppInstaller
         return Task.FromResult(new CheckResult(false, "", "Not registered in Add/Remove Programs"));
     }
 
+    public static async Task<CheckResult> DetectElevatedStartup(CancellationToken ct)
+    {
+        var result = await RunProcess(
+            "schtasks.exe",
+            $"/Query /TN \"{StartupTaskName}\" /FO LIST",
+            ct);
+
+        return result.ExitCode == 0
+            ? new CheckResult(true, "Scheduled task", "Runs elevated at Windows logon")
+            : new CheckResult(false, "", "Elevated startup task not registered");
+    }
+
     // ── Installation ─────────────────────────────────────────────────────
 
     public static async Task<CheckResult> InstallAppFiles(
@@ -73,6 +86,7 @@ public static class AppInstaller
         progress(30, "Copying files…");
         Directory.CreateDirectory(InstallDir);
         CopyDirectory(bundledDir, InstallDir, overwrite: true);
+        CleanupLegacyKittenHerderFiles();
 
         // Copy uninstall script
         var uninstallSrc = Path.Combine(bundledDir, "uninstall-tinyboss.ps1");
@@ -212,6 +226,61 @@ public static class AppInstaller
         }
     }
 
+    public static async Task<CheckResult> RegisterElevatedStartup(
+        Action<int, string> progress, CancellationToken ct)
+    {
+        progress(20, "Creating elevated startup task…");
+
+        var exePath = Path.Combine(InstallDir, AppExeName);
+        if (!File.Exists(exePath))
+            return new(false, "", $"{AppExeName} not installed yet");
+
+        var script = $"""
+            $ErrorActionPreference = 'Stop'
+            $taskName = '{StartupTaskName}'
+            $exePath = '{exePath}'
+            $workDir = '{InstallDir}'
+            $user = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+            $action = New-ScheduledTaskAction -Execute $exePath -WorkingDirectory $workDir
+            $trigger = New-ScheduledTaskTrigger -AtLogOn -User $user
+            $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Highest
+            $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew -StartWhenAvailable
+            Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Description 'Start TinyBoss elevated at user logon so it can manage elevated terminal windows.' -Force | Out-Null
+            """;
+
+        var result = await RunPowerShellResult(script, ct);
+        if (result.ExitCode != 0)
+            return new(false, "", string.IsNullOrWhiteSpace(result.Error) ? result.Output : result.Error);
+
+        progress(90, "Verifying…");
+        var detect = await DetectElevatedStartup(ct);
+        progress(100, detect.Success ? "Elevated startup registered ✅" : detect.Message);
+        return detect.Success ? new(true, detect.Version, detect.Message) : detect;
+    }
+
+    private static void CleanupLegacyKittenHerderFiles()
+    {
+        string[] legacyFiles =
+        [
+            "KittenHerder.exe",
+            "KittenHerder.dll",
+            "KittenHerder.pdb",
+            "KittenHerder.deps.json",
+            "KittenHerder.runtimeconfig.json",
+            "web.config",
+        ];
+
+        foreach (var fileName in legacyFiles)
+        {
+            var path = Path.Combine(InstallDir, fileName);
+            if (!File.Exists(path))
+                continue;
+
+            try { File.Delete(path); }
+            catch { /* Stale cleanup is best effort; install verification catches real failures. */ }
+        }
+    }
+
     private static async Task RunPowerShell(string script, CancellationToken ct)
     {
         var psi = new ProcessStartInfo
@@ -228,4 +297,31 @@ public static class AppInstaller
         if (proc is not null)
             await proc.WaitForExitAsync(ct);
     }
+
+    private static Task<ProcessResult> RunPowerShellResult(string script, CancellationToken ct) =>
+        RunProcess("powershell.exe", $"-NoProfile -ExecutionPolicy Bypass -Command \"{script.Replace("\"", "\\\"")}\"", ct);
+
+    private static async Task<ProcessResult> RunProcess(string fileName, string arguments, CancellationToken ct)
+    {
+        var psi = new ProcessStartInfo
+        {
+            FileName = fileName,
+            Arguments = arguments,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        };
+
+        using var proc = Process.Start(psi);
+        if (proc is null)
+            return new(-1, "", $"Failed to start {fileName}");
+
+        var stdout = proc.StandardOutput.ReadToEndAsync(ct);
+        var stderr = proc.StandardError.ReadToEndAsync(ct);
+        await proc.WaitForExitAsync(ct);
+        return new(proc.ExitCode, await stdout, await stderr);
+    }
+
+    private sealed record ProcessResult(int ExitCode, string Output, string Error);
 }

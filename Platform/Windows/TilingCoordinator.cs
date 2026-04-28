@@ -359,13 +359,14 @@ public sealed class TilingCoordinator : IDisposable
                 if (!plan.Assigned.TryGetValue(monitor.DeviceName, out var assigned))
                     continue;
 
-                for (int i = 0; i < assigned.Count; i++)
+                var fillOrder = GetFillOrder(ComputeGridSize(assigned.Count), Layout);
+                for (int i = 0; i < assigned.Count && i < fillOrder.Count; i++)
                 {
                     var hwnd = assigned[i];
                     if (!tileByHwnd.TryGetValue(hwnd, out var tileSlot) || !IsWindow(hwnd))
                         continue;
 
-                    grid.Slots[i] = tileSlot with { Alias = tileSlot.Alias ?? _aliasMemory.Get(hwnd) };
+                    grid.Slots[fillOrder[i]] = tileSlot with { Alias = tileSlot.Alias ?? _aliasMemory.Get(hwnd) };
                     RegisterProcessExitLocked(hwnd, tileSlot.ProcessId);
                     _detachedTiles.Remove(hwnd);
                 }
@@ -434,8 +435,8 @@ public sealed class TilingCoordinator : IDisposable
             CompactGridLocked(source);
             CompactGridLocked(target);
 
-            var sourceOrdered = source.Slots.OrderBy(kv => kv.Key).Select(kv => kv.Value).ToArray();
-            var targetOrdered = target.Slots.OrderBy(kv => kv.Key).Select(kv => kv.Value).ToArray();
+            var sourceOrdered = GetOrderedTileSlots(source).ToArray();
+            var targetOrdered = GetOrderedTileSlots(target).ToArray();
             var plan = PageMovePlanner.Plan(targetOrdered, sourceOrdered);
             moved = plan.Moved.Count;
             if (moved == 0)
@@ -545,9 +546,20 @@ public sealed class TilingCoordinator : IDisposable
         var normalizedAlias = string.IsNullOrWhiteSpace(alias) ? null : alias.Trim();
         _aliasMemory.Set(ts.Hwnd, normalizedAlias);
         grid.Slots[slot] = ts with { Alias = normalizedAlias };
+        if (!string.IsNullOrWhiteSpace(normalizedAlias))
+            TrySetWindowTitle(ts.Hwnd, normalizedAlias);
 
         SlotsChanged?.Invoke();
         return true;
+    }
+
+    private void TrySetWindowTitle(nint hwnd, string title)
+    {
+        if (!SetWindowText(hwnd, title))
+        {
+            var err = Marshal.GetLastWin32Error();
+            DiagLog($"SET_WINDOW_TEXT FAILED hwnd=0x{hwnd:X} err={err}");
+        }
     }
 
     // ── Rebalance and positioning ───────────────────────────────────────────
@@ -587,7 +599,11 @@ public sealed class TilingCoordinator : IDisposable
             if (!grid.Slots.TryGetValue(slot, out var tileSlot)) return;
             if (!IsWindow(tileSlot.Hwnd)) { RemoveSlotLocked(grid, slot, clearAlias: true); return; }
 
-            var bounds = GetPaneBounds(grid.MonitorHandle, grid.GridSize, Layout);
+            var bounds = GetPaneBoundsForOccupiedSlots(
+                grid.MonitorHandle,
+                grid.GridSize,
+                Layout,
+                grid.Slots.Keys.ToArray());
             if (!bounds.TryGetValue(slot, out var rect)) return;
             RestoreWindowForMove(tileSlot.Hwnd);
             TrySetWindowPos(tileSlot.Hwnd, rect, $"single slot={slot}");
@@ -605,8 +621,12 @@ public sealed class TilingCoordinator : IDisposable
         if (grid.Slots.Count == 0 || grid.MonitorHandle == nint.Zero)
             return;
 
-        var bounds = GetPaneBounds(grid.MonitorHandle, grid.GridSize, Layout);
         PruneDeadWindowsLocked(grid);
+        var bounds = GetPaneBoundsForOccupiedSlots(
+            grid.MonitorHandle,
+            grid.GridSize,
+            Layout,
+            grid.Slots.Keys.ToArray());
 
         var validSlots = grid.Slots.Where(kv => bounds.ContainsKey(kv.Key)).ToList();
         if (validSlots.Count == 0) return;
@@ -739,6 +759,76 @@ public sealed class TilingCoordinator : IDisposable
         }
 
         return result;
+    }
+
+    public static Dictionary<int, RECT> GetPaneBoundsForOccupiedSlots(
+        nint monitorHandle,
+        int gridSize,
+        string layout,
+        IReadOnlyCollection<int> occupiedSlots)
+    {
+        var info = new MONITORINFO { cbSize = (uint)Marshal.SizeOf<MONITORINFO>() };
+        GetMonitorInfo(monitorHandle, ref info);
+        return GetPaneBoundsForOccupiedSlots(monitorHandle, gridSize, info.rcWork, layout, occupiedSlots);
+    }
+
+    public static Dictionary<int, RECT> GetPaneBoundsForOccupiedSlots(
+        nint monitorHandle,
+        int gridSize,
+        RECT wa,
+        string layout,
+        IReadOnlyCollection<int> occupiedSlots)
+    {
+        var result = GetPaneBounds(monitorHandle, gridSize, wa, layout);
+        ApplyOddWindowSpan(result, NormalizeGridSize(gridSize), layout, occupiedSlots);
+        return result;
+    }
+
+    private static void ApplyOddWindowSpan(
+        Dictionary<int, RECT> bounds,
+        int gridSize,
+        string layout,
+        IReadOnlyCollection<int> occupiedSlots)
+    {
+        if (!string.Equals(layout, "2x3", StringComparison.OrdinalIgnoreCase))
+            return;
+
+        var occupied = occupiedSlots
+            .Where(bounds.ContainsKey)
+            .ToHashSet();
+
+        if (gridSize == 4 && occupied.Count == 3)
+        {
+            SpanAcrossSingleEmptyRow(bounds, occupied, 0, 2);
+            SpanAcrossSingleEmptyRow(bounds, occupied, 1, 3);
+            return;
+        }
+
+        if (gridSize == 6 && occupied.Count == 5)
+        {
+            SpanAcrossSingleEmptyRow(bounds, occupied, 0, 3);
+            SpanAcrossSingleEmptyRow(bounds, occupied, 1, 4);
+            SpanAcrossSingleEmptyRow(bounds, occupied, 2, 5);
+        }
+    }
+
+    private static void SpanAcrossSingleEmptyRow(
+        Dictionary<int, RECT> bounds,
+        HashSet<int> occupied,
+        int topSlot,
+        int bottomSlot)
+    {
+        if (!bounds.TryGetValue(topSlot, out var top) ||
+            !bounds.TryGetValue(bottomSlot, out var bottom))
+            return;
+
+        var topOccupied = occupied.Contains(topSlot);
+        var bottomOccupied = occupied.Contains(bottomSlot);
+        if (topOccupied == bottomOccupied)
+            return;
+
+        var spanSlot = topOccupied ? topSlot : bottomSlot;
+        bounds[spanSlot] = new RECT(top.Left, top.Top, bottom.Right, bottom.Bottom);
     }
 
     // ── HWND discovery ──────────────────────────────────────────────────────
@@ -1152,25 +1242,59 @@ public sealed class TilingCoordinator : IDisposable
         return deadSlots.Count > 0;
     }
 
-    private static void CompactGridLocked(MonitorGridState grid)
+    private void CompactGridLocked(MonitorGridState grid)
     {
-        var ordered = grid.Slots.OrderBy(kv => kv.Key).Select(kv => kv.Value).ToArray();
+        var ordered = GetOrderedTileSlots(grid).ToArray();
         RewriteGridSlotsLocked(grid, ordered);
     }
 
-    private static void RewriteGridSlotsLocked(MonitorGridState grid, IReadOnlyList<TileSlot> slots)
+    private void RewriteGridSlotsLocked(MonitorGridState grid, IReadOnlyList<TileSlot> slots)
     {
         grid.Slots.Clear();
-        for (int i = 0; i < slots.Count; i++)
-            grid.Slots[i] = slots[i];
+        var fillOrder = GetFillOrder(ComputeGridSize(slots.Count), Layout);
+        for (int i = 0; i < slots.Count && i < fillOrder.Count; i++)
+            grid.Slots[fillOrder[i]] = slots[i];
     }
 
-    private static int FindNextEmptySlotLocked(MonitorGridState grid, int? maxSlots = null)
+    private int FindNextEmptySlotLocked(MonitorGridState grid, int? maxSlots = null)
     {
         int max = maxSlots ?? grid.GridSizeForNextWindow;
-        for (int i = 0; i < max; i++)
-            if (!grid.Slots.ContainsKey(i)) return i;
+        foreach (var slot in GetFillOrder(max, Layout))
+            if (!grid.Slots.ContainsKey(slot)) return slot;
         return -1;
+    }
+
+    private IEnumerable<TileSlot> GetOrderedTileSlots(MonitorGridState grid)
+    {
+        var slotOrder = GetFillOrder(grid.GridSize, Layout);
+        return grid.Slots
+            .OrderBy(kv =>
+            {
+                var index = IndexOfSlot(slotOrder, kv.Key);
+                return index < 0 ? int.MaxValue : index;
+            })
+            .ThenBy(kv => kv.Key)
+            .Select(kv => kv.Value);
+    }
+
+    private static int IndexOfSlot(IReadOnlyList<int> slotOrder, int slot)
+    {
+        for (int i = 0; i < slotOrder.Count; i++)
+            if (slotOrder[i] == slot)
+                return i;
+        return -1;
+    }
+
+    public static IReadOnlyList<int> GetFillOrder(int gridSize, string layout = "2x3")
+    {
+        return NormalizeGridSize(gridSize) switch
+        {
+            4 => [0, 2, 1, 3],
+            6 when string.Equals(layout, "3x2", StringComparison.OrdinalIgnoreCase) => [0, 2, 4, 1, 3, 5],
+            6 => [0, 3, 1, 4, 2, 5],
+            2 => [0, 1],
+            _ => [0],
+        };
     }
 
     public static int NormalizeGridSize(int size) => size switch
@@ -1258,6 +1382,8 @@ public sealed class TilingCoordinator : IDisposable
     public static extern int GetWindowText(nint hWnd, StringBuilder lpString, int nMaxCount);
     [DllImport("user32.dll")]
     public static extern int GetWindowTextLength(nint hWnd);
+    [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool SetWindowText(nint hWnd, string lpString);
 
     public static string GetWindowTitle(nint hwnd)
     {

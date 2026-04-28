@@ -656,13 +656,30 @@ public class App : Application
             var dialog = new RenameDialog(currentAlias);
             dialog.Closed += (_, _) =>
             {
-                if (dialog.AliasResult is { } alias && _tiling is not null)
+                if (dialog.Accepted && dialog.AliasResult is { } alias && _tiling is not null)
                 {
                     _tiling.RenameSlot(monitorHandle, slot, alias);
+                    RefreshOverlayAliases(monitorHandle);
+                    RebuildTrayMenu();
                 }
             };
             dialog.Show();
+            dialog.Activate();
+            dialog.Topmost = true;
+            await Task.Delay(100);
+            dialog.Topmost = false;
         });
+    }
+
+    private void RefreshOverlayAliases(nint monitorHandle)
+    {
+        if (_overlay is null || _tiling is null)
+            return;
+
+        var snapshot = _tiling.GetSnapshot(monitorHandle);
+        var aliases = snapshot.Where(kv => kv.Value.Alias is not null)
+            .ToDictionary(kv => kv.Key, kv => kv.Value.Alias!);
+        _overlay.SetOccupiedSlots(new HashSet<int>(snapshot.Keys), aliases);
     }
 
     private void CheckFirstRun()
