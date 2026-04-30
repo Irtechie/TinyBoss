@@ -4,6 +4,7 @@ using System.Net.WebSockets;
 using System.Text.Json;
 using System.Threading.Channels;
 using TinyBoss.Core;
+using TinyBoss.Platform.Windows;
 using TinyBoss.Protocol;
 
 namespace TinyBoss.Handlers;
@@ -14,6 +15,7 @@ namespace TinyBoss.Handlers;
 public sealed class SpawnHandler
 {
     private readonly SessionRegistry _registry;
+    private readonly TilingCoordinator _tiling;
     private readonly ILogger<SpawnHandler> _logger;
     private readonly HashSet<string> _allowlist;
 
@@ -26,9 +28,10 @@ public sealed class SpawnHandler
         ?? Environment.GetEnvironmentVariable("KITTENHERDER_ALLOWLIST_PATH")
         ?? Path.Combine(AppContext.BaseDirectory, "allowed_executables.txt");
 
-    public SpawnHandler(SessionRegistry registry, ILogger<SpawnHandler> logger)
+    public SpawnHandler(SessionRegistry registry, TilingCoordinator tiling, ILogger<SpawnHandler> logger)
     {
         _registry = registry;
+        _tiling = tiling;
         _logger = logger;
         _allowlist = LoadAllowlist();
     }
@@ -123,6 +126,8 @@ public sealed class SpawnHandler
 
         var session = new ManagedSession(sessionId, payload.Executable ?? payload.Command ?? commandExe, payload.Cwd, payload.SourceSurface, proc);
         _registry.TryAdd(session);
+        if (payload.Visible && !string.IsNullOrWhiteSpace(payload.Title))
+            _ = Task.Run(() => RememberVisibleWindowTitleAsync(proc, payload.Title), CancellationToken.None);
 
         _logger.LogInformation("KH: Spawned {Cmd} → session {Id} (pid {Pid}) visible={Visible}", commandExe, sessionId, proc.Id, payload.Visible);
         await sendAsync(SpawnAckEnvelope(sessionId, proc, commandExe, payload.Cwd, payload.SourceSurface));
@@ -211,6 +216,34 @@ public sealed class SpawnHandler
         };
         try { await sendAsync(report); } catch { /* WS may be closed */ }
         await session.DisposeAsync();
+    }
+
+    private async Task RememberVisibleWindowTitleAsync(Process proc, string title)
+    {
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(8);
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            try
+            {
+                if (proc.HasExited)
+                    return;
+
+                proc.Refresh();
+                var hwnd = proc.MainWindowHandle;
+                if (hwnd != nint.Zero && TilingCoordinator.IsWindow(hwnd))
+                {
+                    _tiling.RememberWindowAlias(hwnd, title, applyNow: true);
+                    return;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "KH: Failed while remembering visible window title for PID {Pid}", proc.Id);
+                return;
+            }
+
+            await Task.Delay(100);
+        }
     }
 
     private static KhEnvelope BuildStreamOut(string sessionId, string fd, string[] lines) => new()

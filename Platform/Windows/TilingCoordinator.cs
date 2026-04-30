@@ -21,6 +21,8 @@ public sealed record MonitorGridSnapshot(
     IReadOnlyDictionary<int, TileSlot> Slots,
     int GridSize);
 
+public sealed record AliasReapplyResult(int Checked, int Renamed, int MissingAlias, int Failed);
+
 internal sealed class MonitorGridState
 {
     public required string DeviceName { get; init; }
@@ -209,7 +211,9 @@ public sealed class TilingCoordinator : IDisposable
 
             GetWindowThreadProcessId(hwnd, out int pid);
             var alias = _aliasMemory.Get(hwnd);
-            grid.Slots[slot] = new TileSlot(hwnd, pid, sessionId, alias);
+            var tileSlot = new TileSlot(hwnd, pid, sessionId, alias);
+            grid.Slots[slot] = tileSlot;
+            ApplyAliasTitleLocked(tileSlot);
             RegisterProcessExitLocked(hwnd, pid);
             SetActiveGridLocked(grid);
 
@@ -266,11 +270,14 @@ public sealed class TilingCoordinator : IDisposable
 
             targetGrid.Slots.Remove(targetSlot);
             sourceGrid.Slots[sourceSlot] = targetTile with { Alias = displacedAlias };
-            targetGrid.Slots[targetSlot] = new TileSlot(
+            var draggedTile = new TileSlot(
                 draggedHwnd,
                 draggedPid,
                 draggedSessionId ?? sourceLocation.TileSlot.SessionId,
                 draggedAlias);
+            targetGrid.Slots[targetSlot] = draggedTile;
+            ApplyAliasTitleLocked(sourceGrid.Slots[sourceSlot]);
+            ApplyAliasTitleLocked(draggedTile);
 
             RegisterProcessExitLocked(targetTile.Hwnd, targetTile.ProcessId);
             RegisterProcessExitLocked(draggedHwnd, draggedPid);
@@ -434,7 +441,9 @@ public sealed class TilingCoordinator : IDisposable
                     if (!tileByHwnd.TryGetValue(hwnd, out var tileSlot) || !IsWindow(hwnd))
                         continue;
 
-                    grid.Slots[fillOrder[i]] = tileSlot with { Alias = tileSlot.Alias ?? _aliasMemory.Get(hwnd) };
+                    var reassigned = tileSlot with { Alias = tileSlot.Alias ?? _aliasMemory.Get(hwnd) };
+                    grid.Slots[fillOrder[i]] = reassigned;
+                    ApplyAliasTitleLocked(reassigned);
                     RegisterProcessExitLocked(hwnd, tileSlot.ProcessId);
                     _detachedTiles.Remove(hwnd);
                 }
@@ -602,6 +611,55 @@ public sealed class TilingCoordinator : IDisposable
         }
     }
 
+    public bool RememberWindowAlias(nint hwnd, string? alias, bool applyNow = true)
+    {
+        lock (_lock)
+        {
+            if (hwnd == nint.Zero || !IsWindow(hwnd))
+                return false;
+
+            var normalizedAlias = NormalizeAlias(alias);
+            _aliasMemory.Set(hwnd, normalizedAlias);
+
+            var location = FindLocationForHwndLocked(hwnd);
+            if (location is not null && _grids.TryGetValue(location.DeviceName, out var grid))
+            {
+                grid.Slots[location.Slot] = location.TileSlot with { Alias = normalizedAlias };
+                if (applyNow)
+                    ApplyAliasTitleLocked(grid.Slots[location.Slot]);
+                SlotsChanged?.Invoke();
+            }
+            else if (applyNow && !string.IsNullOrWhiteSpace(normalizedAlias))
+            {
+                TrySetWindowTitle(hwnd, normalizedAlias);
+            }
+
+            return true;
+        }
+    }
+
+    public AliasReapplyResult ReapplyAliases()
+    {
+        lock (_lock)
+        {
+            PruneDeadWindowsLocked();
+            var total = new AliasReapplyResult(0, 0, 0, 0);
+            foreach (var grid in _grids.Values)
+                total = Add(total, ReapplyAliasesLocked(grid));
+            return total;
+        }
+    }
+
+    public AliasReapplyResult ReapplyAliases(nint monitorHandle)
+    {
+        lock (_lock)
+        {
+            var grid = GetOrCreateGridLocked(monitorHandle);
+            PruneDeadWindowsLocked(grid);
+            return ReapplyAliasesLocked(grid);
+        }
+    }
+
     private bool RenameSlotLocked(MonitorGridState grid, int slot, string alias)
     {
         if (!grid.Slots.TryGetValue(slot, out var ts))
@@ -612,7 +670,7 @@ public sealed class TilingCoordinator : IDisposable
             return false;
         }
 
-        var normalizedAlias = string.IsNullOrWhiteSpace(alias) ? null : alias.Trim();
+        var normalizedAlias = NormalizeAlias(alias);
         _aliasMemory.Set(ts.Hwnd, normalizedAlias);
         grid.Slots[slot] = ts with { Alias = normalizedAlias };
         if (!string.IsNullOrWhiteSpace(normalizedAlias))
@@ -622,13 +680,56 @@ public sealed class TilingCoordinator : IDisposable
         return true;
     }
 
-    private void TrySetWindowTitle(nint hwnd, string title)
+    private static string? NormalizeAlias(string? alias) =>
+        string.IsNullOrWhiteSpace(alias) ? null : alias.Trim();
+
+    private AliasReapplyResult ReapplyAliasesLocked(MonitorGridState grid)
     {
-        if (!SetWindowText(hwnd, title))
+        var checkedCount = 0;
+        var renamed = 0;
+        var missing = 0;
+        var failed = 0;
+
+        foreach (var tileSlot in grid.Slots.Values)
         {
-            var err = Marshal.GetLastWin32Error();
-            DiagLog($"SET_WINDOW_TEXT FAILED hwnd=0x{hwnd:X} err={err}");
+            if (!IsWindow(tileSlot.Hwnd))
+                continue;
+
+            checkedCount++;
+            if (string.IsNullOrWhiteSpace(tileSlot.Alias))
+            {
+                missing++;
+                continue;
+            }
+
+            if (TrySetWindowTitle(tileSlot.Hwnd, tileSlot.Alias))
+                renamed++;
+            else
+                failed++;
         }
+
+        return new AliasReapplyResult(checkedCount, renamed, missing, failed);
+    }
+
+    private static AliasReapplyResult Add(AliasReapplyResult a, AliasReapplyResult b) =>
+        new(a.Checked + b.Checked, a.Renamed + b.Renamed, a.MissingAlias + b.MissingAlias, a.Failed + b.Failed);
+
+    private bool ApplyAliasTitleLocked(TileSlot tileSlot)
+    {
+        if (string.IsNullOrWhiteSpace(tileSlot.Alias) || !IsWindow(tileSlot.Hwnd))
+            return false;
+
+        return TrySetWindowTitle(tileSlot.Hwnd, tileSlot.Alias);
+    }
+
+    private bool TrySetWindowTitle(nint hwnd, string title)
+    {
+        if (SetWindowText(hwnd, title))
+            return true;
+
+        var err = Marshal.GetLastWin32Error();
+        DiagLog($"SET_WINDOW_TEXT FAILED hwnd=0x{hwnd:X} err={err}");
+        return false;
     }
 
     // ── Rebalance and positioning ───────────────────────────────────────────
@@ -676,6 +777,7 @@ public sealed class TilingCoordinator : IDisposable
             if (!bounds.TryGetValue(slot, out var rect)) return;
             RestoreWindowForMove(tileSlot.Hwnd);
             TrySetWindowPos(tileSlot.Hwnd, rect, $"single slot={slot}");
+            ApplyAliasTitleLocked(tileSlot);
         }
     }
 
@@ -737,6 +839,7 @@ public sealed class TilingCoordinator : IDisposable
             DiagLog($"POSITION_ALL EndDeferWindowPos FAILED count={validSlots.Count} err={err}");
             PositionSequentiallyLocked(bounds, validSlots, "end-fallback");
         }
+        ReapplyAliasesLocked(grid);
         SetActiveGridLocked(grid);
     }
 
@@ -765,6 +868,7 @@ public sealed class TilingCoordinator : IDisposable
 
             RestoreWindowForMove(tileSlot.Hwnd);
             TrySetWindowPos(tileSlot.Hwnd, rect, $"{reason} slot={slot}");
+            ApplyAliasTitleLocked(tileSlot);
         }
     }
 
@@ -1149,6 +1253,7 @@ public sealed class TilingCoordinator : IDisposable
 
         var alias = detached.TileSlot.Alias ?? _aliasMemory.Get(hwnd);
         grid.Slots[slot] = detached.TileSlot with { Alias = alias };
+        ApplyAliasTitleLocked(grid.Slots[slot]);
         RegisterProcessExitLocked(hwnd, detached.TileSlot.ProcessId);
         SetActiveGridLocked(grid);
         monitor = grid.MonitorHandle;
@@ -1204,7 +1309,9 @@ public sealed class TilingCoordinator : IDisposable
 
             GetWindowThreadProcessId(hwnd, out int pid);
             var alias = _aliasMemory.Get(hwnd);
-            grid.Slots[slot] = new TileSlot(hwnd, pid, null, alias);
+            var tileSlot = new TileSlot(hwnd, pid, null, alias);
+            grid.Slots[slot] = tileSlot;
+            ApplyAliasTitleLocked(tileSlot);
             RegisterProcessExitLocked(hwnd, pid);
             recovered++;
             DiagLog($"GRID_RECOVERED device={grid.DeviceName} slot={slot} hwnd=0x{hwnd:X}");

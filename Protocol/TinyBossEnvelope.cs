@@ -123,7 +123,8 @@ public sealed record IntrospectReplyPayload(
 
 public sealed record RenamePayload(
     [property: JsonPropertyName("slot")]           int? Slot,
-    [property: JsonPropertyName("alias")]          string Alias,
+    [property: JsonPropertyName("alias")]          string? Alias,
     [property: JsonPropertyName("hwnd")]           string? Hwnd = null,
-    [property: JsonPropertyName("monitor_handle")] string? MonitorHandle = null
+    [property: JsonPropertyName("monitor_handle")] string? MonitorHandle = null,
+    [property: JsonPropertyName("action")]         string? Action = null
 );

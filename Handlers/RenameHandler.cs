@@ -19,6 +19,23 @@ public sealed class RenameHandler
             return;
         }
 
+        if (IsReapplyRequest(payload))
+        {
+            var result = _tiling.ReapplyAliases();
+            var message =
+                $"Checked {result.Checked} grid window(s); reapplied {result.Renamed} stored name(s)" +
+                (result.MissingAlias > 0 ? $"; {result.MissingAlias} window(s) have no stored name" : "") +
+                (result.Failed > 0 ? $"; {result.Failed} failed" : "") +
+                ".";
+            await sendAsync(new KhEnvelope
+            {
+                Type = KhMessageType.Ack,
+                SessionId = envelope.SessionId,
+                Payload = JsonSerializer.SerializeToElement(new AckPayload(true, message)),
+            });
+            return;
+        }
+
         var alias = payload.Alias ?? "";
         var ok =
             TryParseHandle(payload.Hwnd, out var hwnd)
@@ -44,6 +61,24 @@ public sealed class RenameHandler
         };
         await sendAsync(ack);
     }
+
+    private static bool IsReapplyRequest(RenamePayload payload)
+    {
+        var action = Normalize(payload.Action);
+        if (action is "reapply" or "checknames" or "refresh" or "restore")
+            return true;
+
+        return string.IsNullOrWhiteSpace(payload.Alias) &&
+               string.IsNullOrWhiteSpace(payload.Hwnd) &&
+               string.IsNullOrWhiteSpace(payload.MonitorHandle) &&
+               payload.Slot is null;
+    }
+
+    private static string Normalize(string? value) =>
+        new((value ?? string.Empty)
+            .Where(char.IsLetterOrDigit)
+            .Select(char.ToLowerInvariant)
+            .ToArray());
 
     private static bool TryParseHandle(string? value, out nint handle)
     {
