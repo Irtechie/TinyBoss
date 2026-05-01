@@ -10,13 +10,19 @@ public sealed class LiveWindowAliasMemory
 
     public bool Any => _aliases.Count > 0;
 
-    public LiveWindowAliasMemory()
+    public LiveWindowAliasMemory(string? persistPath = null)
     {
-        var dir = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "TinyBoss");
+        var dir = persistPath is null
+            ? Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "TinyBoss")
+            : Path.GetDirectoryName(persistPath);
+
+        if (string.IsNullOrWhiteSpace(dir))
+            dir = Environment.CurrentDirectory;
+
         Directory.CreateDirectory(dir);
-        _persistPath = Path.Combine(dir, "window-aliases.json");
+        _persistPath = persistPath ?? Path.Combine(dir, "window-aliases.json");
         Load();
     }
 

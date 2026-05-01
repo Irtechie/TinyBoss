@@ -48,8 +48,11 @@ public sealed class TilingCoordinator : IDisposable
     private readonly Dictionary<string, MonitorGridState> _grids = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<nint, DetachedTile> _detachedTiles = new();
     private readonly Dictionary<nint, Process> _processWaits = new();
+    private readonly Dictionary<nint, Timer> _aliasTitleReapplyTimers = new();
     private readonly LiveWindowAliasMemory _aliasMemory = new();
     private readonly ILogger<TilingCoordinator> _logger;
+    private WinEventDelegate? _nameChangeDelegate;
+    private nint _nameChangeHook;
     private string? _activeMonitorDevice;
     private nint _activeMonitor;
     private bool _disposed;
@@ -58,6 +61,7 @@ public sealed class TilingCoordinator : IDisposable
     private bool _dragInProgress;
     private bool _reflowPending;
     private const int REFLOW_DEBOUNCE_MS = 100;
+    private const int ALIAS_TITLE_ENFORCE_INTERVAL_MS = 100;
 
     public event Action? SlotsChanged;
 
@@ -213,7 +217,7 @@ public sealed class TilingCoordinator : IDisposable
             var alias = _aliasMemory.Get(hwnd);
             var tileSlot = new TileSlot(hwnd, pid, sessionId, alias);
             grid.Slots[slot] = tileSlot;
-            ApplyAliasTitleLocked(tileSlot);
+            ApplyAliasTitleWithRetriesLocked(tileSlot);
             RegisterProcessExitLocked(hwnd, pid);
             SetActiveGridLocked(grid);
 
@@ -276,8 +280,8 @@ public sealed class TilingCoordinator : IDisposable
                 draggedSessionId ?? sourceLocation.TileSlot.SessionId,
                 draggedAlias);
             targetGrid.Slots[targetSlot] = draggedTile;
-            ApplyAliasTitleLocked(sourceGrid.Slots[sourceSlot]);
-            ApplyAliasTitleLocked(draggedTile);
+            ApplyAliasTitleWithRetriesLocked(sourceGrid.Slots[sourceSlot]);
+            ApplyAliasTitleWithRetriesLocked(draggedTile);
 
             RegisterProcessExitLocked(targetTile.Hwnd, targetTile.ProcessId);
             RegisterProcessExitLocked(draggedHwnd, draggedPid);
@@ -443,7 +447,7 @@ public sealed class TilingCoordinator : IDisposable
 
                     var reassigned = tileSlot with { Alias = tileSlot.Alias ?? _aliasMemory.Get(hwnd) };
                     grid.Slots[fillOrder[i]] = reassigned;
-                    ApplyAliasTitleLocked(reassigned);
+                    ApplyAliasTitleWithRetriesLocked(reassigned);
                     RegisterProcessExitLocked(hwnd, tileSlot.ProcessId);
                     _detachedTiles.Remove(hwnd);
                 }
@@ -620,18 +624,21 @@ public sealed class TilingCoordinator : IDisposable
 
             var normalizedAlias = NormalizeAlias(alias);
             _aliasMemory.Set(hwnd, normalizedAlias);
+            if (string.IsNullOrWhiteSpace(normalizedAlias))
+                CancelAliasTitleReapplyLocked(hwnd);
 
             var location = FindLocationForHwndLocked(hwnd);
             if (location is not null && _grids.TryGetValue(location.DeviceName, out var grid))
             {
                 grid.Slots[location.Slot] = location.TileSlot with { Alias = normalizedAlias };
                 if (applyNow)
-                    ApplyAliasTitleLocked(grid.Slots[location.Slot]);
+                    ApplyAliasTitleWithRetriesLocked(grid.Slots[location.Slot]);
                 SlotsChanged?.Invoke();
             }
             else if (applyNow && !string.IsNullOrWhiteSpace(normalizedAlias))
             {
                 TrySetWindowTitle(hwnd, normalizedAlias);
+                ScheduleAliasTitleReapplyLocked(hwnd);
             }
 
             return true;
@@ -674,7 +681,9 @@ public sealed class TilingCoordinator : IDisposable
         _aliasMemory.Set(ts.Hwnd, normalizedAlias);
         grid.Slots[slot] = ts with { Alias = normalizedAlias };
         if (!string.IsNullOrWhiteSpace(normalizedAlias))
-            TrySetWindowTitle(ts.Hwnd, normalizedAlias);
+            ApplyAliasTitleWithRetriesLocked(grid.Slots[slot]);
+        else
+            CancelAliasTitleReapplyLocked(ts.Hwnd);
 
         SlotsChanged?.Invoke();
         return true;
@@ -702,7 +711,7 @@ public sealed class TilingCoordinator : IDisposable
                 continue;
             }
 
-            if (TrySetWindowTitle(tileSlot.Hwnd, tileSlot.Alias))
+            if (ApplyAliasTitleWithRetriesLocked(tileSlot))
                 renamed++;
             else
                 failed++;
@@ -720,6 +729,147 @@ public sealed class TilingCoordinator : IDisposable
             return false;
 
         return TrySetWindowTitle(tileSlot.Hwnd, tileSlot.Alias);
+    }
+
+    private bool ApplyAliasTitleWithRetriesLocked(TileSlot tileSlot)
+    {
+        var applied = ApplyAliasTitleLocked(tileSlot);
+        if (applied)
+            ScheduleAliasTitleReapplyLocked(tileSlot.Hwnd);
+        return applied;
+    }
+
+    private bool ApplyRememberedAliasTitleLocked(nint hwnd)
+    {
+        if (hwnd == nint.Zero || !IsWindow(hwnd))
+        {
+            CancelAliasTitleReapplyLocked(hwnd);
+            return false;
+        }
+
+        var location = FindLocationForHwndLocked(hwnd);
+        var alias = location?.TileSlot.Alias ?? _aliasMemory.Get(hwnd);
+        if (string.IsNullOrWhiteSpace(alias))
+        {
+            CancelAliasTitleReapplyLocked(hwnd);
+            return false;
+        }
+
+        if (location is not null && _grids.TryGetValue(location.DeviceName, out var grid))
+        {
+            grid.Slots[location.Slot] = location.TileSlot with { Alias = alias };
+            return ApplyAliasTitleLocked(grid.Slots[location.Slot]);
+        }
+
+        return TrySetWindowTitle(hwnd, alias);
+    }
+
+    private void ScheduleAliasTitleReapplyLocked(nint hwnd)
+    {
+        if (hwnd == nint.Zero)
+            return;
+
+        if (_aliasTitleReapplyTimers.ContainsKey(hwnd))
+            return;
+
+        var timer = new Timer(_ =>
+        {
+            try
+            {
+                lock (_lock)
+                {
+                    if (_disposed || !ApplyRememberedAliasTitleLocked(hwnd))
+                        return;
+                }
+            }
+            catch (Exception ex)
+            {
+                DiagLog($"ALIAS_REAPPLY_ERROR hwnd=0x{hwnd:X}: {ex.Message}");
+                lock (_lock)
+                    CancelAliasTitleReapplyLocked(hwnd);
+            }
+        }, null, ALIAS_TITLE_ENFORCE_INTERVAL_MS, ALIAS_TITLE_ENFORCE_INTERVAL_MS);
+
+        _aliasTitleReapplyTimers[hwnd] = timer;
+    }
+
+    private void CancelAliasTitleReapplyLocked(nint hwnd)
+    {
+        if (!_aliasTitleReapplyTimers.Remove(hwnd, out var timer))
+            return;
+
+        try { timer.Dispose(); } catch { }
+    }
+
+    public void InstallAliasTitleHook()
+    {
+        lock (_lock)
+        {
+            try
+            {
+                if (_nameChangeHook != nint.Zero)
+                    return;
+
+                _nameChangeDelegate = OnWindowNameChanged;
+                _nameChangeHook = SetWinEventHook(
+                    EVENT_OBJECT_NAMECHANGE,
+                    EVENT_OBJECT_NAMECHANGE,
+                    nint.Zero,
+                    _nameChangeDelegate,
+                    0,
+                    0,
+                    WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
+
+                if (_nameChangeHook == nint.Zero)
+                {
+                    var err = Marshal.GetLastWin32Error();
+                    DiagLog($"ALIAS_NAME_HOOK_FAILED err={err}");
+                }
+            }
+            catch (Exception ex)
+            {
+                DiagLog($"ALIAS_NAME_HOOK_ERROR: {ex.Message}");
+                _nameChangeHook = nint.Zero;
+                _nameChangeDelegate = null;
+            }
+        }
+    }
+
+    private void OnWindowNameChanged(
+        nint hWinEventHook,
+        uint eventType,
+        nint hwnd,
+        int idObject,
+        int idChild,
+        uint dwEventThread,
+        uint dwmsEventTime)
+    {
+        if (idObject != OBJID_WINDOW || idChild != CHILDID_SELF || hwnd == nint.Zero)
+            return;
+
+        try
+        {
+            lock (_lock)
+            {
+                if (_disposed)
+                    return;
+
+                var location = FindLocationForHwndLocked(hwnd);
+                var alias = location?.TileSlot.Alias ?? _aliasMemory.Get(hwnd);
+                if (string.IsNullOrWhiteSpace(alias))
+                    return;
+
+                var title = GetWindowTitle(hwnd);
+                if (string.Equals(title, alias, StringComparison.Ordinal))
+                    return;
+
+                TrySetWindowTitle(hwnd, alias);
+            }
+        }
+        catch (Exception ex)
+        {
+            DiagLog($"ALIAS_NAME_CHANGE_ERROR hwnd=0x{hwnd:X}: {ex.Message}");
+        }
     }
 
     private bool TrySetWindowTitle(nint hwnd, string title)
@@ -777,7 +927,7 @@ public sealed class TilingCoordinator : IDisposable
             if (!bounds.TryGetValue(slot, out var rect)) return;
             RestoreWindowForMove(tileSlot.Hwnd);
             TrySetWindowPos(tileSlot.Hwnd, rect, $"single slot={slot}");
-            ApplyAliasTitleLocked(tileSlot);
+            ApplyAliasTitleWithRetriesLocked(tileSlot);
         }
     }
 
@@ -868,7 +1018,7 @@ public sealed class TilingCoordinator : IDisposable
 
             RestoreWindowForMove(tileSlot.Hwnd);
             TrySetWindowPos(tileSlot.Hwnd, rect, $"{reason} slot={slot}");
-            ApplyAliasTitleLocked(tileSlot);
+            ApplyAliasTitleWithRetriesLocked(tileSlot);
         }
     }
 
@@ -1253,7 +1403,7 @@ public sealed class TilingCoordinator : IDisposable
 
         var alias = detached.TileSlot.Alias ?? _aliasMemory.Get(hwnd);
         grid.Slots[slot] = detached.TileSlot with { Alias = alias };
-        ApplyAliasTitleLocked(grid.Slots[slot]);
+        ApplyAliasTitleWithRetriesLocked(grid.Slots[slot]);
         RegisterProcessExitLocked(hwnd, detached.TileSlot.ProcessId);
         SetActiveGridLocked(grid);
         monitor = grid.MonitorHandle;
@@ -1311,7 +1461,7 @@ public sealed class TilingCoordinator : IDisposable
             var alias = _aliasMemory.Get(hwnd);
             var tileSlot = new TileSlot(hwnd, pid, null, alias);
             grid.Slots[slot] = tileSlot;
-            ApplyAliasTitleLocked(tileSlot);
+            ApplyAliasTitleWithRetriesLocked(tileSlot);
             RegisterProcessExitLocked(hwnd, pid);
             recovered++;
             DiagLog($"GRID_RECOVERED device={grid.DeviceName} slot={slot} hwnd=0x{hwnd:X}");
@@ -1351,7 +1501,10 @@ public sealed class TilingCoordinator : IDisposable
 
         grid.Slots.Remove(slot);
         if (clearAlias)
+        {
             _aliasMemory.Remove(tileSlot.Hwnd);
+            CancelAliasTitleReapplyLocked(tileSlot.Hwnd);
+        }
 
         if (!_aliasMemory.Contains(tileSlot.Hwnd) &&
             _processWaits.TryGetValue(tileSlot.Hwnd, out var proc))
@@ -1382,6 +1535,7 @@ public sealed class TilingCoordinator : IDisposable
                     {
                         RemoveHwndLocked(hwnd, clearAlias: true);
                         _aliasMemory.Remove(hwnd);
+                        CancelAliasTitleReapplyLocked(hwnd);
                         if (_processWaits.Remove(hwnd, out var stored))
                             stored.Dispose();
                     }
@@ -1406,7 +1560,6 @@ public sealed class TilingCoordinator : IDisposable
         foreach (var grid in _grids.Values)
             pruned |= PruneDeadWindowsLocked(grid);
 
-        _aliasMemory.Prune(IsWindow);
         return pruned;
     }
 
@@ -1490,6 +1643,16 @@ public sealed class TilingCoordinator : IDisposable
 
         lock (_lock)
         {
+            if (_nameChangeHook != nint.Zero)
+            {
+                try { UnhookWinEvent(_nameChangeHook); } catch { }
+                _nameChangeHook = nint.Zero;
+            }
+            _nameChangeDelegate = null;
+
+            foreach (var timer in _aliasTitleReapplyTimers.Values)
+                try { timer.Dispose(); } catch { }
+            _aliasTitleReapplyTimers.Clear();
             foreach (var proc in _processWaits.Values)
                 try { proc.Dispose(); } catch { }
             _processWaits.Clear();
@@ -1504,6 +1667,11 @@ public sealed class TilingCoordinator : IDisposable
     public const uint SWP_SHOWWINDOW = 0x0040;
     public const uint SWP_ASYNCWINDOWPOS = 0x4000;
     private const uint PositionFlags = SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_ASYNCWINDOWPOS;
+    private const uint EVENT_OBJECT_NAMECHANGE = 0x800C;
+    private const uint WINEVENT_OUTOFCONTEXT = 0x0000;
+    private const uint WINEVENT_SKIPOWNPROCESS = 0x0002;
+    private const int OBJID_WINDOW = 0;
+    private const int CHILDID_SELF = 0;
     private const int SW_RESTORE = 9;
     private const int GW_OWNER = 4;
     private const int GWL_EXSTYLE = -20;
@@ -1560,6 +1728,28 @@ public sealed class TilingCoordinator : IDisposable
     public static extern int GetWindowTextLength(nint hWnd);
     [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
     private static extern bool SetWindowText(nint hWnd, string lpString);
+
+    private delegate void WinEventDelegate(
+        nint hWinEventHook,
+        uint eventType,
+        nint hwnd,
+        int idObject,
+        int idChild,
+        uint dwEventThread,
+        uint dwmsEventTime);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern nint SetWinEventHook(
+        uint eventMin,
+        uint eventMax,
+        nint hmodWinEventProc,
+        WinEventDelegate lpfnWinEventProc,
+        uint idProcess,
+        uint idThread,
+        uint dwFlags);
+
+    [DllImport("user32.dll")]
+    private static extern bool UnhookWinEvent(nint hWinEventHook);
 
     public static string GetWindowTitle(nint hwnd)
     {

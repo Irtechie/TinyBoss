@@ -7,6 +7,9 @@ using TinyBoss.Platform.Windows;
 using TinyBoss.Protocol;
 using TinyBoss.Voice;
 
+if (ElevationRelauncher.TryRelaunchFromInstalledTask(StartupLog))
+    return;
+
 // ── Single-instance mutex ────────────────────────────────────────────────────
 using var mutex = new Mutex(true, @"Global\TinyBoss", out bool isFirst);
 if (!isFirst)
@@ -112,6 +115,7 @@ app.MapGet("/ws", async (HttpContext ctx,
 app.MapGet("/health", (SessionRegistry registry, TilingCoordinator tiling) => Results.Ok(new
 {
     status = "ok",
+    elevated = ElevationRelauncher.IsCurrentProcessElevated(),
     sessions = registry.All().Count(),
     windows = tiling.GetAllSnapshots().Sum(s => s.Slots.Count),
     transport = "pipe:TinyBoss + tcp:8033"
@@ -124,13 +128,38 @@ TinyBossServices.Initialize(app.Services);
 app.StartAsync().GetAwaiter().GetResult();
 app.Logger.LogInformation("TinyBoss listening on pipe:TinyBoss + tcp:127.0.0.1:8033");
 
-// ── Start Avalonia on main thread (blocks until user quits) ──────────────────
-AppBuilder.Configure<App>()
-    .UsePlatformDetect()
-    .LogToTrace()
-    .StartWithClassicDesktopLifetime(args, ShutdownMode.OnExplicitShutdown);
+try
+{
+    // ── Start Avalonia on main thread (blocks until user quits) ──────────────
+    AppBuilder.Configure<App>()
+        .UsePlatformDetect()
+        .LogToTrace()
+        .StartWithClassicDesktopLifetime(args, ShutdownMode.OnExplicitShutdown);
+}
+finally
+{
+    // ── Graceful shutdown after Avalonia exits ────────────────────────────────
+    app.Logger.LogInformation("TinyBoss shutting down...");
+    try { app.StopAsync(TimeSpan.FromSeconds(5)).GetAwaiter().GetResult(); }
+    catch (Exception ex) { StartupLog($"Host stop failed: {ex.Message}"); }
 
-// ── Graceful shutdown after Avalonia exits ────────────────────────────────────
-app.Logger.LogInformation("TinyBoss shutting down...");
-app.StopAsync(TimeSpan.FromSeconds(5)).GetAwaiter().GetResult();
+    try { app.DisposeAsync().AsTask().GetAwaiter().GetResult(); }
+    catch (Exception ex) { StartupLog($"Host dispose failed: {ex.Message}"); }
+}
+
+static void StartupLog(string message)
+{
+    try
+    {
+        var dir = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "Programs",
+            "TinyBoss");
+        Directory.CreateDirectory(dir);
+        File.AppendAllText(
+            Path.Combine(dir, "startup.log"),
+            $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] {message}\n");
+    }
+    catch { }
+}
 

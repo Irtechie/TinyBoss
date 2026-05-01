@@ -22,6 +22,7 @@ public class App : Application
     private TileOverlay? _overlay;
     private string? _voiceTargetSessionId;
     private string? _iconPath;
+    private bool _shutdownStarted;
 
     // Tiling state
     private nint _currentMonitor;
@@ -41,6 +42,7 @@ public class App : Application
         if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
         {
             desktop.ShutdownMode = ShutdownMode.OnExplicitShutdown;
+            desktop.ShutdownRequested += (_, _) => ShutdownTinyBoss();
 
             _config = TinyBossServices.Provider.GetRequiredService<TinyBossConfig>();
             _registry = TinyBossServices.Provider.GetRequiredService<SessionRegistry>();
@@ -53,6 +55,8 @@ public class App : Application
             _tiling = TinyBossServices.Provider.GetRequiredService<TilingCoordinator>();
             _tiling.Layout = _config.GridLayout ?? "2x3";
             _tiling.SlotsChanged += OnSlotsChanged;
+            // WinEvent callbacks need a message pump, so install from the UI thread too.
+            _tiling.InstallAliasTitleHook();
 
             _dragWatcher = TinyBossServices.Provider.GetRequiredService<DragWatcher>();
             _dragWatcher.DragStarted += OnDragStarted;
@@ -217,11 +221,7 @@ public class App : Application
         var quitItem = new NativeMenuItem("Quit TinyBoss");
         quitItem.Click += (_, _) =>
         {
-            _voice?.Dispose();
-            _dragWatcher?.Dispose();
-            _tiling?.Dispose();
-            if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
-                Dispatcher.UIThread.Post(() => desktop.TryShutdown(0));
+            RequestShutdown();
         };
         menu.Add(quitItem);
 
@@ -673,7 +673,10 @@ public class App : Application
         if (_config is null) return;
         _hotkeys?.RequestReRegister();
         if (_tiling is not null)
+        {
             _tiling.Layout = _config.GridLayout ?? "2x3";
+            _tiling.CollectVisibleTerminals(_config.EnabledMonitors, "settings");
+        }
         RebuildTrayMenu();
     }
 
@@ -717,5 +720,58 @@ public class App : Application
             ShowSettings();
             _config.Save(); // Creates the file so next launch isn't first-run
         }
+    }
+
+    private void RequestShutdown()
+    {
+        ShutdownTinyBoss();
+        if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
+            Dispatcher.UIThread.Post(() => desktop.TryShutdown(0));
+    }
+
+    private void ShutdownTinyBoss()
+    {
+        if (_shutdownStarted)
+            return;
+        _shutdownStarted = true;
+
+        try { _registry!.SessionChanged -= OnSessionChanged; } catch { }
+        try { _voice!.RecordingStateChanged -= OnRecordingStateChanged; } catch { }
+        try { _voice!.StatusMessage -= OnVoiceStatusMessage; } catch { }
+        try { _tiling!.SlotsChanged -= OnSlotsChanged; } catch { }
+        try { _dragWatcher!.DragStarted -= OnDragStarted; } catch { }
+        try { _dragWatcher!.DragMoved -= OnDragMoved; } catch { }
+        try { _dragWatcher!.DragEnded -= OnDragEnded; } catch { }
+        try { _hotkeys!.TileKeyPressed -= OnTileKeyPressed; } catch { }
+        try { _hotkeys!.RebalanceKeyPressed -= OnRebalanceKeyPressed; } catch { }
+        try { _hotkeys!.OverlayDismiss -= OnOverlayDismiss; } catch { }
+
+        try { _hotkeys?.SetOverlayActive(false); } catch { }
+        try { _overlay?.Close(); } catch { }
+        _overlay = null;
+        _currentPaneBounds = null;
+
+        try { _settingsWindow?.Close(); } catch { }
+        _settingsWindow = null;
+
+        try { _voice?.Dispose(); } catch { }
+        _voice = null;
+        try { _dragWatcher?.Dispose(); } catch { }
+        _dragWatcher = null;
+        try { _hotkeys?.Dispose(); } catch { }
+        _hotkeys = null;
+        try { _tiling?.Dispose(); } catch { }
+        _tiling = null;
+
+        try
+        {
+            if (_trayIcon is not null)
+            {
+                _trayIcon.IsVisible = false;
+                (_trayIcon as IDisposable)?.Dispose();
+                _trayIcon = null;
+            }
+        }
+        catch { }
     }
 }

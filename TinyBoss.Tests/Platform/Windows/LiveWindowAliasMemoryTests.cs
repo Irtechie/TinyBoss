@@ -8,7 +8,7 @@ public sealed class LiveWindowAliasMemoryTests
     [Fact]
     public void RemembersAliasForLiveWindow()
     {
-        var memory = new LiveWindowAliasMemory();
+        var memory = CreateMemory();
         var hwnd = new nint(123);
 
         memory.Set(hwnd, "Build Agent");
@@ -19,7 +19,7 @@ public sealed class LiveWindowAliasMemoryTests
     [Fact]
     public void TrimsAliasBeforeStoring()
     {
-        var memory = new LiveWindowAliasMemory();
+        var memory = CreateMemory();
         var hwnd = new nint(123);
 
         memory.Set(hwnd, "  Build Agent  ");
@@ -30,7 +30,7 @@ public sealed class LiveWindowAliasMemoryTests
     [Fact]
     public void EmptyAliasClearsMemory()
     {
-        var memory = new LiveWindowAliasMemory();
+        var memory = CreateMemory();
         var hwnd = new nint(123);
         memory.Set(hwnd, "Build Agent");
 
@@ -42,7 +42,7 @@ public sealed class LiveWindowAliasMemoryTests
     [Fact]
     public void PruneRemovesDeadWindows()
     {
-        var memory = new LiveWindowAliasMemory();
+        var memory = CreateMemory();
         var live = new nint(123);
         var dead = new nint(456);
         memory.Set(live, "Live");
@@ -52,5 +52,11 @@ public sealed class LiveWindowAliasMemoryTests
 
         Assert.Equal("Live", memory.Get(live));
         Assert.Null(memory.Get(dead));
+    }
+
+    private static LiveWindowAliasMemory CreateMemory()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "TinyBoss.Tests", Guid.NewGuid().ToString("N"));
+        return new LiveWindowAliasMemory(Path.Combine(dir, "window-aliases.json"));
     }
 }
