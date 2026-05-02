@@ -141,7 +141,10 @@ public partial class SettingsWindow : Window
             foreach (var mon in monitors)
             {
                 var primary = mon.IsPrimary ? " ⭐" : "";
-                var label = $"{mon.FriendlyName} — {mon.Width}×{mon.Height}{primary}";
+                var displayName = string.Equals(mon.FriendlyName, mon.DeviceName, StringComparison.OrdinalIgnoreCase)
+                    ? MonitorEnumerator.FormatDisplayName(mon.DeviceName)
+                    : mon.FriendlyName;
+                var label = $"{displayName} — {mon.Width}×{mon.Height}{primary}";
                 var cb = new CheckBox
                 {
                     Content = label,

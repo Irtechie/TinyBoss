@@ -245,7 +245,7 @@ public class App : Application
 
         foreach (var grid in tiledSnapshots)
         {
-            var screenItem = new NativeMenuItem($"{grid.DeviceName} ({grid.Slots.Count})");
+            var screenItem = new NativeMenuItem($"{MonitorEnumerator.FormatDisplayName(grid.DeviceName)} ({grid.Slots.Count})");
             var screenMenu = new NativeMenu();
 
             foreach (var (slot, ts) in grid.Slots.OrderBy(kv => kv.Key))

@@ -10,6 +10,7 @@ namespace TinyBoss.Platform.Windows;
 public static class MonitorEnumerator
 {
     public sealed record MonitorDesc(string DeviceName, string FriendlyName, int Width, int Height, bool IsPrimary);
+    private const string WindowsDisplayPrefix = @"\\.\";
 
     public static List<MonitorDesc> GetMonitors()
     {
@@ -44,6 +45,14 @@ public static class MonitorEnumerator
     {
         var info = new MONITORINFOEX { cbSize = (uint)Marshal.SizeOf<MONITORINFOEX>() };
         return GetMonitorInfo(hMonitor, ref info) ? info.szDevice : null;
+    }
+
+    public static string FormatDisplayName(string deviceName)
+    {
+        if (deviceName.StartsWith(WindowsDisplayPrefix, StringComparison.OrdinalIgnoreCase))
+            return deviceName[WindowsDisplayPrefix.Length..];
+
+        return deviceName;
     }
 
     // ── P/Invoke ─────────────────────────────────────────────────────────────
