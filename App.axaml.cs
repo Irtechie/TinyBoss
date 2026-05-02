@@ -146,6 +146,9 @@ public class App : Application
     {
         var menu = new NativeMenu();
         var sessions = _registry?.GetSnapshot() ?? [];
+        _tiling?.PruneDeadWindows();
+        var tiledSnapshots = _tiling?.GetAllSnapshots() ?? [];
+        var tiledWindowCount = tiledSnapshots.Sum(g => g.Slots.Count);
 
         // Voice target selection
         var defaultItem = new NativeMenuItem("🎯 Default (focused window)")
@@ -180,6 +183,18 @@ public class App : Application
 
         menu.Add(new NativeMenuItemSeparator());
 
+        var tiledSummary = new NativeMenuItem(
+            tiledWindowCount == 1
+                ? "Tiled Windows: 1 window"
+                : $"Tiled Windows: {tiledWindowCount} windows")
+        {
+            IsEnabled = false,
+        };
+        menu.Add(tiledSummary);
+        menu.Add(BuildTiledWindowsMenu(tiledSnapshots, tiledWindowCount));
+
+        menu.Add(new NativeMenuItemSeparator());
+
         // Tiling actions
         var tileItem = new NativeMenuItem("📐 Tile Windows");
         tileItem.Click += (_, _) => OnTileKeyPressed();
@@ -199,42 +214,6 @@ public class App : Application
         resumeHistoryItem.Click += (_, _) => ShowResumeHistory();
         menu.Add(resumeHistoryItem);
 
-        menu.Add(new NativeMenuItemSeparator());
-
-        // Tiled windows — rename entries (prune dead windows first)
-        _tiling?.PruneDeadWindows();
-        var tiledSnapshots = _tiling?.GetAllSnapshots() ?? [];
-        if (tiledSnapshots.Count > 0)
-        {
-            foreach (var grid in tiledSnapshots)
-            {
-                var header = new NativeMenuItem($"Screen {grid.DeviceName}") { IsEnabled = false };
-                menu.Add(header);
-                foreach (var (slot, ts) in grid.Slots.OrderBy(kv => kv.Key))
-                {
-                    var title = TilingCoordinator.GetWindowTitle(ts.Hwnd);
-                    var displayName = ts.Alias
-                        ?? (string.IsNullOrWhiteSpace(title) ? $"Window (slot {slot + 1})" : title);
-                    if (displayName.Length > 40)
-                        displayName = displayName[..37] + "…";
-                    var capturedSlot = slot;
-                    var capturedMonitor = grid.MonitorHandle;
-                    var renameItem = new NativeMenuItem($"✏️ {displayName}");
-                    renameItem.Click += (_, _) => ShowRenameDialog(capturedMonitor, capturedSlot, ts.Alias ?? "");
-                    menu.Add(renameItem);
-
-                    var bossifyItem = new NativeMenuItem($"Bossify {displayName}");
-                    bossifyItem.Click += (_, _) => _ = BossifyWindowAsync(grid.MonitorHandle, capturedSlot, ts);
-                    menu.Add(bossifyItem);
-
-                    var bossifyResumeItem = new NativeMenuItem($"Bossify + resume {displayName}");
-                    bossifyResumeItem.Click += (_, _) => _ = BossifyResumeWindowAsync(grid.MonitorHandle, capturedSlot, ts);
-                    menu.Add(bossifyResumeItem);
-                }
-            }
-            menu.Add(new NativeMenuItemSeparator());
-        }
-
         var settingsItem = new NativeMenuItem("⚙️ Settings");
         settingsItem.Click += (_, _) => ShowSettings();
         menu.Add(settingsItem);
@@ -247,6 +226,68 @@ public class App : Application
         menu.Add(quitItem);
 
         return menu;
+    }
+
+    private NativeMenuItem BuildTiledWindowsMenu(IReadOnlyList<MonitorGridSnapshot> tiledSnapshots, int tiledWindowCount)
+    {
+        var windowsItem = new NativeMenuItem(
+            tiledWindowCount == 1
+                ? "Window List (1)"
+                : $"Window List ({tiledWindowCount})");
+        var windowsMenu = new NativeMenu();
+
+        if (tiledWindowCount == 0)
+        {
+            windowsMenu.Add(new NativeMenuItem("No tiled windows") { IsEnabled = false });
+            windowsItem.Menu = windowsMenu;
+            return windowsItem;
+        }
+
+        foreach (var grid in tiledSnapshots)
+        {
+            var screenItem = new NativeMenuItem($"{grid.DeviceName} ({grid.Slots.Count})");
+            var screenMenu = new NativeMenu();
+
+            foreach (var (slot, ts) in grid.Slots.OrderBy(kv => kv.Key))
+            {
+                var displayName = GetTiledWindowDisplayName(slot, ts);
+                var capturedSlot = slot;
+                var capturedTile = ts;
+                var capturedMonitor = grid.MonitorHandle;
+
+                var windowItem = new NativeMenuItem($"Slot {slot + 1}: {displayName}");
+                var windowMenu = new NativeMenu();
+
+                var renameItem = new NativeMenuItem("Rename...");
+                renameItem.Click += (_, _) => ShowRenameDialog(capturedMonitor, capturedSlot, capturedTile.Alias ?? "");
+                windowMenu.Add(renameItem);
+
+                var bossifyItem = new NativeMenuItem("Bossify");
+                bossifyItem.Click += (_, _) => _ = BossifyWindowAsync(capturedMonitor, capturedSlot, capturedTile);
+                windowMenu.Add(bossifyItem);
+
+                var bossifyResumeItem = new NativeMenuItem("Bossify + resume");
+                bossifyResumeItem.Click += (_, _) => _ = BossifyResumeWindowAsync(capturedMonitor, capturedSlot, capturedTile);
+                windowMenu.Add(bossifyResumeItem);
+
+                windowItem.Menu = windowMenu;
+                screenMenu.Add(windowItem);
+            }
+
+            screenItem.Menu = screenMenu;
+            windowsMenu.Add(screenItem);
+        }
+
+        windowsItem.Menu = windowsMenu;
+        return windowsItem;
+    }
+
+    private static string GetTiledWindowDisplayName(int slot, TileSlot ts)
+    {
+        var title = TilingCoordinator.GetWindowTitle(ts.Hwnd);
+        var displayName = ts.Alias
+            ?? (string.IsNullOrWhiteSpace(title) ? $"Window (slot {slot + 1})" : title);
+        return displayName.Length > 44 ? displayName[..41] + "..." : displayName;
     }
 
     // ── Tiling orchestration ─────────────────────────────────────────────────
