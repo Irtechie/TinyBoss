@@ -25,7 +25,14 @@ public sealed class IntrospectHandler
             Command:       s.Command,
             Cwd:           s.Cwd,
             SourceSurface: s.SourceSurface,
-            Running:       !s.Process.HasExited
+            Running:       !s.Process.HasExited,
+            SessionKind:   s.SessionKind,
+            Capabilities:  s.Capabilities,
+            State:         s.State,
+            ExitCode:      s.ExitCode,
+            LastOutputAt:  s.LastOutputAt?.ToString("O"),
+            RawStreamAvailable: s.RawStreamAvailable,
+            SupportsTranscriptTail: s.SupportsTranscriptTail
         )).ToArray();
 
         var windows = _tiling.GetAllSnapshots()
@@ -46,7 +53,12 @@ public sealed class IntrospectHandler
                         Title:         TilingCoordinator.GetWindowTitle(tile.Hwnd),
                         Running:       TilingCoordinator.IsWindow(tile.Hwnd),
                         TextTail:      textTail,
-                        CapturedAt:    textTail.Length > 0 ? DateTimeOffset.UtcNow.ToString("O") : null);
+                        CapturedAt:    textTail.Length > 0 ? DateTimeOffset.UtcNow.ToString("O") : null,
+                        SessionKind:   TinyBossSessionKind.ExternalWindow,
+                        Capabilities:  [TinyBossCapability.WindowInject, TinyBossCapability.SetTitle],
+                        State:         TilingCoordinator.IsWindow(tile.Hwnd) ? TinyBossLaneState.Running : TinyBossLaneState.Exited,
+                        RawStreamAvailable: false,
+                        SupportsTranscriptTail: true);
                 }))
             .ToArray();
 

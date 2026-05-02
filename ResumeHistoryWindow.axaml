@@ -1,0 +1,53 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="TinyBoss.ResumeHistoryWindow"
+        Title="TinyBoss Resume History"
+        Width="760" Height="460"
+        MinWidth="560" MinHeight="360"
+        WindowStartupLocation="CenterScreen"
+        Background="#111111">
+  <Grid RowDefinitions="Auto,*,Auto" Margin="16" RowSpacing="12">
+    <StackPanel Spacing="3">
+      <TextBlock Text="Resume History"
+                 FontWeight="SemiBold"
+                 Foreground="#f4f4f4"
+                 FontSize="22" />
+      <TextBlock Text="Captured CLI resume commands from Bossify + resume"
+                 Foreground="#a8a8a8"
+                 FontSize="12" />
+    </StackPanel>
+
+    <Border Grid.Row="1"
+            Background="#050505"
+            BorderBrush="#303030"
+            BorderThickness="1"
+            CornerRadius="6"
+            Padding="12">
+      <TextBox x:Name="HistoryBox"
+               AcceptsReturn="True"
+               IsReadOnly="True"
+               TextWrapping="NoWrap"
+               FontFamily="Consolas"
+               FontSize="12"
+               Foreground="#ededed"
+               Background="#050505"
+               BorderThickness="0" />
+    </Border>
+
+    <Grid Grid.Row="2" ColumnDefinitions="*,Auto,Auto" ColumnSpacing="8">
+      <TextBlock x:Name="PathText"
+                 Foreground="#7c7c7c"
+                 FontSize="11"
+                 VerticalAlignment="Center"
+                 TextTrimming="CharacterEllipsis" />
+      <Button x:Name="CopyButton"
+              Grid.Column="1"
+              Content="Copy"
+              Width="84" />
+      <Button x:Name="CloseButton"
+              Grid.Column="2"
+              Content="Close"
+              Width="84" />
+    </Grid>
+  </Grid>
+</Window>

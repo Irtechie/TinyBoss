@@ -26,8 +26,7 @@ public sealed class KillHandler
 
         try
         {
-            if (!session.Process.HasExited)
-                session.Process.Kill(entireProcessTree: true);
+            session.Kill();
 
             _registry.TryRemove(session.SessionId, out _);
             _logger.LogInformation("KH: Killed session {Id} (pid {Pid})", session.SessionId, session.Key.Pid);

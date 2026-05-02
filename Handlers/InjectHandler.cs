@@ -38,6 +38,17 @@ public sealed class InjectHandler
             return;
         }
 
+        if (!session.SupportsCapability(TinyBossCapability.SendText))
+        {
+            _logger.LogWarning(
+                "KH: Inject blocked for session {Id}; kind={Kind} capabilities={Capabilities}",
+                session.SessionId,
+                session.SessionKind,
+                string.Join(",", session.Capabilities));
+            await sendAsync(Error(envelope.SessionId, $"Session kind '{session.SessionKind}' does not support send_text"));
+            return;
+        }
+
         var payload = envelope.Payload.Deserialize<InjectPayload>();
         if (payload is null || string.IsNullOrEmpty(payload.Text))
         {
@@ -47,7 +58,7 @@ public sealed class InjectHandler
 
         try
         {
-            await session.Process.StandardInput.WriteAsync(payload.Text.AsMemory(), ct);
+            await session.WriteInputAsync(payload.Text.AsMemory(), ct);
             _logger.LogDebug("KH: Injected {N} chars into session {Id}", payload.Text.Length, session.SessionId);
             await sendAsync(Ack(envelope.SessionId));
         }

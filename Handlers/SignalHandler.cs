@@ -28,11 +28,20 @@ public sealed class SignalHandler
         var payload = envelope.Payload.Deserialize<SignalPayload>();
         var signal = payload?.Signal ?? "ctrl_c";
 
+        if (!session.SupportsCapability(TinyBossCapability.Interrupt))
+        {
+            _logger.LogWarning(
+                "KH: Signal {Sig} blocked for session {Id}; kind={Kind}",
+                signal,
+                session.SessionId,
+                session.SessionKind);
+            await sendAsync(Error(envelope.SessionId, $"Session kind '{session.SessionKind}' does not support interrupt"));
+            return;
+        }
+
         try
         {
-            // Write Ctrl+C character to stdin — works for console apps reading stdin
-            var sigChar = signal == "ctrl_break" ? "\x1c" : "\x03";
-            await session.Process.StandardInput.WriteAsync(sigChar.AsMemory(), ct);
+            await session.WriteSignalAsync(signal, ct);
             _logger.LogInformation("KH: Signal {Sig} → session {Id}", signal, session.SessionId);
             await sendAsync(Ack(envelope.SessionId));
         }

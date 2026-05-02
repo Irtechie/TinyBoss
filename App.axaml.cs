@@ -3,9 +3,10 @@ using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Markup.Xaml;
 using Avalonia.Threading;
+using System.Diagnostics;
+using TinyBoss.Voice;
 using TinyBoss.Core;
 using TinyBoss.Platform.Windows;
-using TinyBoss.Voice;
 using static TinyBoss.Platform.Windows.TilingCoordinator;
 
 namespace TinyBoss;
@@ -15,6 +16,7 @@ public class App : Application
     private TrayIcon? _trayIcon;
     private SessionRegistry? _registry;
     private VoiceController? _voice;
+    private TextInjector? _textInjector;
     private TilingCoordinator? _tiling;
     private DragWatcher? _dragWatcher;
     private HotKeyListener? _hotkeys;
@@ -51,6 +53,7 @@ public class App : Application
             _voice = TinyBossServices.Provider.GetRequiredService<VoiceController>();
             _voice.RecordingStateChanged += OnRecordingStateChanged;
             _voice.StatusMessage += OnVoiceStatusMessage;
+            _textInjector = TinyBossServices.Provider.GetRequiredService<TextInjector>();
 
             _tiling = TinyBossServices.Provider.GetRequiredService<TilingCoordinator>();
             _tiling.Layout = _config.GridLayout ?? "2x3";
@@ -188,6 +191,16 @@ public class App : Application
 
         menu.Add(new NativeMenuItemSeparator());
 
+        var terminalBossItem = new NativeMenuItem("Launch TerminalBoss");
+        terminalBossItem.Click += (_, _) => LaunchTerminalBoss();
+        menu.Add(terminalBossItem);
+
+        var resumeHistoryItem = new NativeMenuItem("Resume History...");
+        resumeHistoryItem.Click += (_, _) => ShowResumeHistory();
+        menu.Add(resumeHistoryItem);
+
+        menu.Add(new NativeMenuItemSeparator());
+
         // Tiled windows — rename entries (prune dead windows first)
         _tiling?.PruneDeadWindows();
         var tiledSnapshots = _tiling?.GetAllSnapshots() ?? [];
@@ -209,6 +222,14 @@ public class App : Application
                     var renameItem = new NativeMenuItem($"✏️ {displayName}");
                     renameItem.Click += (_, _) => ShowRenameDialog(capturedMonitor, capturedSlot, ts.Alias ?? "");
                     menu.Add(renameItem);
+
+                    var bossifyItem = new NativeMenuItem($"Bossify {displayName}");
+                    bossifyItem.Click += (_, _) => _ = BossifyWindowAsync(grid.MonitorHandle, capturedSlot, ts);
+                    menu.Add(bossifyItem);
+
+                    var bossifyResumeItem = new NativeMenuItem($"Bossify + resume {displayName}");
+                    bossifyResumeItem.Click += (_, _) => _ = BossifyResumeWindowAsync(grid.MonitorHandle, capturedSlot, ts);
+                    menu.Add(bossifyResumeItem);
                 }
             }
             menu.Add(new NativeMenuItemSeparator());
@@ -337,6 +358,17 @@ public class App : Application
         try { File.AppendAllText(_diagLog, $"[{DateTime.Now:HH:mm:ss.fff}] {msg}\n"); }
         catch { /* best-effort */ }
     }
+
+    private static void TryMinimizeWindow(nint hwnd)
+    {
+        if (hwnd == nint.Zero)
+            return;
+
+        try { ShowWindow(hwnd, 6); } catch { }
+    }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool ShowWindow(nint hWnd, int nCmdShow);
 
     // ── Drag events → overlay highlighting + snap ────────────────────────────
 
@@ -653,6 +685,247 @@ public class App : Application
     // ── Settings (Phase 4) ─────────────────────────────────────────────────
 
     private SettingsWindow? _settingsWindow;
+
+    private Process? LaunchTerminalBoss(string? name = null, string? cwd = null, string? tint = null, string? run = null)
+    {
+        try
+        {
+            var candidates = new[]
+            {
+                Environment.GetEnvironmentVariable("TERMINALBOSS_EXE_PATH"),
+                Environment.GetEnvironmentVariable("BOSS" + "TERMINAL_EXE_PATH"),
+                Path.Combine(AppContext.BaseDirectory, "TerminalBoss.exe"),
+                Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "TerminalBoss", "bin", "Debug", "net10.0-windows", "TerminalBoss.exe")),
+                Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "TerminalBoss", "TerminalBoss.exe")),
+                Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "TerminalBoss", "bin", "Debug", "net10.0-windows", "TerminalBoss.exe")),
+                Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "TerminalBoss", "TerminalBoss.exe")),
+            };
+
+            var exe = candidates
+                .Where(path => !string.IsNullOrWhiteSpace(path))
+                .Select(path => path!)
+                .FirstOrDefault(File.Exists);
+
+            if (exe is null)
+            {
+                Diag("TERMINALBOSS_LAUNCH missing executable");
+                return null;
+            }
+
+            var psi = new ProcessStartInfo
+            {
+                FileName = exe,
+                UseShellExecute = true,
+                WorkingDirectory = Path.GetDirectoryName(exe) ?? AppContext.BaseDirectory,
+            };
+            if (!string.IsNullOrWhiteSpace(name))
+            {
+                psi.ArgumentList.Add("--name");
+                psi.ArgumentList.Add(name);
+            }
+            if (!string.IsNullOrWhiteSpace(cwd) && Directory.Exists(cwd))
+            {
+                psi.ArgumentList.Add("--cwd");
+                psi.ArgumentList.Add(cwd);
+            }
+            if (!string.IsNullOrWhiteSpace(tint))
+            {
+                psi.ArgumentList.Add("--tint");
+                psi.ArgumentList.Add(tint);
+            }
+            if (!string.IsNullOrWhiteSpace(run))
+            {
+                psi.ArgumentList.Add("--run");
+                psi.ArgumentList.Add(run);
+            }
+
+            return Process.Start(psi);
+        }
+        catch (Exception ex)
+        {
+            Diag($"TERMINALBOSS_LAUNCH_ERROR: {ex.Message}");
+            return null;
+        }
+    }
+
+    private async Task BossifyWindowAsync(nint monitorHandle, int slot, TileSlot tile)
+    {
+        var title = TilingCoordinator.GetWindowTitle(tile.Hwnd);
+        var name = tile.Alias
+            ?? (string.IsNullOrWhiteSpace(title) ? $"Window {slot + 1}" : title);
+        var cwd = ResolveManagedCwd(tile);
+
+        var process = LaunchTerminalBoss(name, cwd);
+        if (!await PlaceTerminalBossReplacementAsync(process, tile.Hwnd, monitorHandle, slot, name, "bossify"))
+            RefreshBossifyFallback(monitorHandle, "bossify-fallback");
+    }
+
+    private async Task BossifyResumeWindowAsync(nint monitorHandle, int slot, TileSlot tile)
+    {
+        var title = TilingCoordinator.GetWindowTitle(tile.Hwnd);
+        var name = tile.Alias
+            ?? (string.IsNullOrWhiteSpace(title) ? $"Window {slot + 1}" : title);
+        var cwd = ResolveManagedCwd(tile);
+
+        if (_textInjector is null)
+        {
+            var process = LaunchTerminalBoss(name, cwd);
+            await PlaceTerminalBossReplacementAsync(process, tile.Hwnd, monitorHandle, slot, name, "bossify-resume-no-injector");
+            return;
+        }
+
+        try
+        {
+            var exitResult = await _textInjector.InjectWindowAsync("/exit", tile.Hwnd, CancellationToken.None);
+            if (!exitResult.Success)
+            {
+                Diag($"BOSSIFY_RESUME_EXIT_INJECT_FAILED hwnd=0x{tile.Hwnd:X}: {exitResult.Message}");
+                return;
+            }
+
+            var resumeCommand = await WaitForResumeCommandAsync(tile.Hwnd);
+            if (string.IsNullOrWhiteSpace(resumeCommand))
+            {
+                Diag($"BOSSIFY_RESUME_COMMAND_NOT_FOUND hwnd=0x{tile.Hwnd:X} name={name}");
+                return;
+            }
+
+            ResumeSessionHistory.Append(new ResumeSessionHistoryRecord(
+                CapturedAt: DateTimeOffset.UtcNow,
+                Name: name,
+                Cwd: cwd,
+                Command: resumeCommand,
+                Tool: ResumeSessionHistory.InferTool(resumeCommand),
+                Source: "bossify-resume",
+                Slot: slot,
+                MonitorHandle: monitorHandle.ToString(),
+                OldHwnd: tile.Hwnd.ToString()));
+
+            var process = LaunchTerminalBoss(name, cwd, run: resumeCommand);
+            if (!await PlaceTerminalBossReplacementAsync(process, tile.Hwnd, monitorHandle, slot, name, "bossify-resume"))
+                RefreshBossifyFallback(monitorHandle, "bossify-resume-fallback");
+        }
+        catch (Exception ex)
+        {
+            Diag($"BOSSIFY_RESUME_ERROR hwnd=0x{tile.Hwnd:X}: {ex.Message}");
+            var process = LaunchTerminalBoss(name, cwd);
+            if (!await PlaceTerminalBossReplacementAsync(process, tile.Hwnd, monitorHandle, slot, name, "bossify-resume-error-fallback"))
+                RefreshBossifyFallback(monitorHandle, "bossify-resume-error-collect");
+        }
+    }
+
+    private async Task<bool> PlaceTerminalBossReplacementAsync(
+        Process? process,
+        nint oldHwnd,
+        nint monitorHandle,
+        int slot,
+        string name,
+        string source)
+    {
+        if (process is null || _tiling is null)
+            return false;
+
+        var newHwnd = await WaitForMainWindowHandleAsync(process);
+        if (newHwnd == nint.Zero || !TilingCoordinator.IsWindow(newHwnd))
+        {
+            Diag($"BOSSIFY_REPLACE_NO_HWND source={source} pid={process.Id}");
+            return false;
+        }
+
+        _tiling.RememberWindowAlias(newHwnd, name, applyNow: true);
+        var assigned = _tiling.AssignToSlot(slot, newHwnd, monitorHandle);
+        if (!assigned)
+        {
+            Diag($"BOSSIFY_REPLACE_ASSIGN_FAILED source={source} pid={process.Id} hwnd=0x{newHwnd:X} slot={slot} monitor=0x{monitorHandle:X}");
+            return false;
+        }
+
+        TryMinimizeWindow(oldHwnd);
+        if (monitorHandle != nint.Zero)
+            RefreshOverlayAliases(monitorHandle);
+        RebuildTrayMenu();
+        Diag($"BOSSIFY_REPLACED source={source} old=0x{oldHwnd:X} new=0x{newHwnd:X} slot={slot} pid={process.Id}");
+        return true;
+    }
+
+    private static async Task<nint> WaitForMainWindowHandleAsync(Process process)
+    {
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(8);
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            try
+            {
+                if (process.HasExited)
+                    return nint.Zero;
+
+                process.Refresh();
+                if (process.MainWindowHandle != nint.Zero)
+                    return process.MainWindowHandle;
+            }
+            catch
+            {
+                return nint.Zero;
+            }
+
+            await Task.Delay(100);
+        }
+
+        return nint.Zero;
+    }
+
+    private void RefreshBossifyFallback(nint monitorHandle, string trigger)
+    {
+        _tiling?.CollectVisibleTerminals(_config?.EnabledMonitors, trigger);
+        if (monitorHandle != nint.Zero)
+            RefreshOverlayAliases(monitorHandle);
+        RebuildTrayMenu();
+    }
+
+    private static async Task<string?> WaitForResumeCommandAsync(nint hwnd)
+    {
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(8);
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            var command = ResumeCommandExtractor.Find(WindowTextCapture.CaptureTail(hwnd));
+            if (!string.IsNullOrWhiteSpace(command))
+                return command;
+
+            await Task.Delay(350);
+        }
+
+        return null;
+    }
+
+    private string? ResolveManagedCwd(TileSlot tile)
+    {
+        if (_registry is not null)
+        {
+            var sessions = _registry.GetSnapshot();
+            var bySessionId = string.IsNullOrWhiteSpace(tile.SessionId)
+                ? null
+                : sessions.FirstOrDefault(s =>
+                    s.SessionId.Equals(tile.SessionId, StringComparison.OrdinalIgnoreCase));
+            if (!string.IsNullOrWhiteSpace(bySessionId?.Cwd))
+                return bySessionId.Cwd;
+
+            var byPid = sessions.FirstOrDefault(s => s.Process.Id == tile.ProcessId);
+            if (!string.IsNullOrWhiteSpace(byPid?.Cwd))
+                return byPid.Cwd;
+        }
+
+        var externalCwd = ProcessWorkingDirectory.TryGet(tile.ProcessId);
+        return string.IsNullOrWhiteSpace(externalCwd) ? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile) : externalCwd;
+    }
+
+    private void ShowResumeHistory()
+    {
+        Dispatcher.UIThread.Post(() =>
+        {
+            var window = new ResumeHistoryWindow();
+            window.Show();
+            window.Activate();
+        });
+    }
 
     private void ShowSettings()
     {

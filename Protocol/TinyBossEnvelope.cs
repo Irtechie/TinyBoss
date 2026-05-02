@@ -53,7 +53,8 @@ public sealed record SpawnPayload(
     [property: JsonPropertyName("cwd")]           string? Cwd,
     [property: JsonPropertyName("source_surface")] string SourceSurface,
     [property: JsonPropertyName("visible")]       bool Visible = true,  // open a real window by default
-    [property: JsonPropertyName("title")]         string? Title = null  // window title, e.g. "Inferno - Tony - 1"
+    [property: JsonPropertyName("title")]         string? Title = null,  // window title, e.g. "Inferno - Tony - 1"
+    [property: JsonPropertyName("host_kind")]     string? HostKind = null
 );
 
 public sealed record InjectPayload(
@@ -99,7 +100,14 @@ public sealed record SessionInfo(
     [property: JsonPropertyName("command")]        string Command,
     [property: JsonPropertyName("cwd")]            string? Cwd,
     [property: JsonPropertyName("source_surface")] string SourceSurface,
-    [property: JsonPropertyName("running")]        bool Running
+    [property: JsonPropertyName("running")]        bool Running,
+    [property: JsonPropertyName("session_kind")]   string SessionKind = "redirected_process",
+    [property: JsonPropertyName("capabilities")]   string[]? Capabilities = null,
+    [property: JsonPropertyName("state")]          string State = "running",
+    [property: JsonPropertyName("exit_code")]      int? ExitCode = null,
+    [property: JsonPropertyName("last_output_at")] string? LastOutputAt = null,
+    [property: JsonPropertyName("raw_stream_available")] bool RawStreamAvailable = false,
+    [property: JsonPropertyName("supports_transcript_tail")] bool SupportsTranscriptTail = true
 );
 
 public sealed record TiledWindowInfo(
@@ -113,7 +121,12 @@ public sealed record TiledWindowInfo(
     [property: JsonPropertyName("title")]          string Title,
     [property: JsonPropertyName("running")]        bool Running,
     [property: JsonPropertyName("text_tail")]      string[] TextTail,
-    [property: JsonPropertyName("captured_at")]    string? CapturedAt
+    [property: JsonPropertyName("captured_at")]    string? CapturedAt,
+    [property: JsonPropertyName("session_kind")]   string SessionKind = "external_window",
+    [property: JsonPropertyName("capabilities")]   string[]? Capabilities = null,
+    [property: JsonPropertyName("state")]          string State = "running",
+    [property: JsonPropertyName("raw_stream_available")] bool RawStreamAvailable = false,
+    [property: JsonPropertyName("supports_transcript_tail")] bool SupportsTranscriptTail = true
 );
 
 public sealed record IntrospectReplyPayload(

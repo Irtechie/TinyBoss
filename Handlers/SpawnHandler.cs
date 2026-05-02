@@ -61,9 +61,28 @@ public sealed class SpawnHandler
         }
 
         var sessionId = envelope.SessionId ?? Guid.NewGuid().ToString("N");
-
+        var sessionKind = ResolveSessionKind(payload);
         Process proc;
-        if (payload.Visible)
+        ITerminalSessionBackend? terminalBackend = null;
+        if (sessionKind == TinyBossSessionKind.BossTerminalPty)
+        {
+            try
+            {
+                terminalBackend = ConPtySession.Start(
+                    commandExe,
+                    payload.Args,
+                    payload.Cwd ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                    _logger);
+                proc = terminalBackend.Process;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "KH: Failed to start BossTerminal PTY process {Cmd}", commandExe);
+                await sendAsync(ErrorEnvelope(sessionId, ex.Message));
+                return;
+            }
+        }
+        else if (payload.Visible)
         {
             // Open a visible console window — user sees and interacts with it directly.
             // Launch via cmd.exe so we can set the window title before the CLI starts.
@@ -124,16 +143,23 @@ public sealed class SpawnHandler
             }
         }
 
-        var session = new ManagedSession(sessionId, payload.Executable ?? payload.Command ?? commandExe, payload.Cwd, payload.SourceSurface, proc);
+        var session = new ManagedSession(
+            sessionId,
+            payload.Executable ?? payload.Command ?? commandExe,
+            payload.Cwd,
+            payload.SourceSurface,
+            proc,
+            sessionKind,
+            terminalBackend);
         _registry.TryAdd(session);
         if (payload.Visible && !string.IsNullOrWhiteSpace(payload.Title))
             _ = Task.Run(() => RememberVisibleWindowTitleAsync(proc, payload.Title), CancellationToken.None);
 
         _logger.LogInformation("KH: Spawned {Cmd} → session {Id} (pid {Pid}) visible={Visible}", commandExe, sessionId, proc.Id, payload.Visible);
-        await sendAsync(SpawnAckEnvelope(sessionId, proc, commandExe, payload.Cwd, payload.SourceSurface));
+        await sendAsync(SpawnAckEnvelope(session));
 
         // Only pump stdout/stderr for headless sessions (visible sessions own their own console)
-        if (!payload.Visible)
+        if (!payload.Visible || terminalBackend is not null)
         {
             _ = Task.Run(() => StreamAsync(session, "stdout", session.StdoutReader, () => session.PumpStdoutAsync(ct), sendAsync, ct), ct);
             _ = Task.Run(() => StreamAsync(session, "stderr", session.StderrReader, () => session.PumpStderrAsync(ct), sendAsync, ct), ct);
@@ -254,18 +280,39 @@ public sealed class SpawnHandler
             new StreamOutPayload(lines, fd, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()))
     };
 
-    private static KhEnvelope SpawnAckEnvelope(string sessionId, Process proc, string command, string? cwd, string sourceSurface) => new()
+    private static string ResolveSessionKind(SpawnPayload payload)
+    {
+        if (!string.IsNullOrWhiteSpace(payload.HostKind))
+            return payload.HostKind.Trim().ToLowerInvariant() switch
+            {
+                TinyBossSessionKind.ExternalWindow => TinyBossSessionKind.ExternalWindow,
+                TinyBossSessionKind.RedirectedProcess => TinyBossSessionKind.RedirectedProcess,
+                TinyBossSessionKind.BossTerminalPty => TinyBossSessionKind.BossTerminalPty,
+                _ => payload.Visible ? TinyBossSessionKind.ExternalWindow : TinyBossSessionKind.RedirectedProcess
+            };
+
+        return payload.Visible ? TinyBossSessionKind.ExternalWindow : TinyBossSessionKind.RedirectedProcess;
+    }
+
+    private static KhEnvelope SpawnAckEnvelope(ManagedSession session) => new()
     {
         Type = KhMessageType.SpawnAck,
-        SessionId = sessionId,
+        SessionId = session.SessionId,
         Payload = JsonSerializer.SerializeToElement(new SessionInfo(
-            SessionId: sessionId,
-            Pid: proc.Id,
-            StartTime: DateTimeOffset.UtcNow.ToString("O"),
-            Command: command,
-            Cwd: cwd,
-            SourceSurface: sourceSurface,
-            Running: true))
+            SessionId: session.SessionId,
+            Pid: session.Process.Id,
+            StartTime: session.Key.StartTime.ToString("O"),
+            Command: session.Command,
+            Cwd: session.Cwd,
+            SourceSurface: session.SourceSurface,
+            Running: true,
+            SessionKind: session.SessionKind,
+            Capabilities: session.Capabilities,
+            State: session.State,
+            ExitCode: session.ExitCode,
+            LastOutputAt: session.LastOutputAt?.ToString("O"),
+            RawStreamAvailable: session.RawStreamAvailable,
+            SupportsTranscriptTail: session.SupportsTranscriptTail))
     };
 
     private static KhEnvelope AckEnvelope(string? sessionId, bool ok, string? message = null) => new()
