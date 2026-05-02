@@ -1665,8 +1665,7 @@ public sealed class TilingCoordinator : IDisposable
     public const uint SWP_NOZORDER = 0x0004;
     public const uint SWP_NOACTIVATE = 0x0010;
     public const uint SWP_SHOWWINDOW = 0x0040;
-    public const uint SWP_ASYNCWINDOWPOS = 0x4000;
-    private const uint PositionFlags = SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_ASYNCWINDOWPOS;
+    private const uint PositionFlags = SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW;
     private const uint EVENT_OBJECT_NAMECHANGE = 0x800C;
     private const uint WINEVENT_OUTOFCONTEXT = 0x0000;
     private const uint WINEVENT_SKIPOWNPROCESS = 0x0002;
