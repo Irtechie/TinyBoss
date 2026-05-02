@@ -23,7 +23,7 @@ public static class TerminalDetector
 
     private static readonly HashSet<string> TerminalProcesses = new(StringComparer.OrdinalIgnoreCase)
     {
-        "WindowsTerminal", "cmd", "powershell", "pwsh", "mintty",
+        "WindowsTerminal", "cmd", "powershell", "pwsh", "mintty", "TerminalBoss", "BossTerminal",
     };
 
     /// <summary>
