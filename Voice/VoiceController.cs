@@ -21,6 +21,7 @@ public sealed class VoiceController : IDisposable
 
     private string? _voiceTargetSessionId;
     private volatile bool _recording;
+    private VoiceRecordingMode _recordingMode = VoiceRecordingMode.None;
 
     // VAD state
     private readonly List<float> _sampleBuffer = new();     // All samples since key-down
@@ -82,6 +83,22 @@ public sealed class VoiceController : IDisposable
 
     public void SetVoiceTarget(string? sessionId) => _voiceTargetSessionId = sessionId;
 
+    public VoiceDictationResult StartDictationOnly()
+    {
+        return BeginRecording(VoiceRecordingMode.DictationOnly, "api");
+    }
+
+    public async Task<VoiceDictationResult> StopDictationOnlyAsync(CancellationToken ct = default)
+    {
+        if (!_recording)
+            return VoiceDictationResult.Failed("No dictation is active.");
+
+        if (_recordingMode != VoiceRecordingMode.DictationOnly)
+            return VoiceDictationResult.Failed("Voice hotkey recording is active.");
+
+        return await StopRecordingAsync(ct);
+    }
+
     public void Start()
     {
         _hotKeyListener.Start();
@@ -95,18 +112,24 @@ public sealed class VoiceController : IDisposable
     private void OnVoiceKeyDown()
     {
         VoiceDiag("KEY_DOWN recording={0}", _recording);
-        if (_recording) return;
+        var result = BeginRecording(VoiceRecordingMode.HotkeyInjection, "hotkey");
+        if (!result.Success)
+            StatusMessage?.Invoke(result.Message);
+    }
+
+    private VoiceDictationResult BeginRecording(VoiceRecordingMode mode, string source)
+    {
+        if (_recording)
+            return VoiceDictationResult.Failed("Voice recording is already active.");
 
         _audioCapture.RetainRawAudio = false;
         if (!_audioCapture.Start())
         {
             _audioCapture.RetainRawAudio = true;
-            VoiceDiag("MIC_FAIL — no microphone available");
-            StatusMessage?.Invoke("No microphone available");
-            return;
+            VoiceDiag("MIC_FAIL source={0} — no microphone available", source);
+            return VoiceDictationResult.Failed("No microphone available.");
         }
 
-        // Reset VAD state
         lock (_vadLock)
         {
             _sampleBuffer.Clear();
@@ -118,17 +141,19 @@ public sealed class VoiceController : IDisposable
         }
         _transcriptBuffer.Clear();
 
-        // Start ordered transcription consumer
         _sessionCts?.Cancel();
+        _sessionCts?.Dispose();
         _sessionCts = new CancellationTokenSource();
         var token = Interlocked.Increment(ref _sessionToken);
         _segmentChannel = Channel.CreateUnbounded<SpeechSegment>(
             new UnboundedChannelOptions { SingleReader = true });
         _consumerTask = Task.Run(() => ConsumeSegmentsAsync(token, _sessionCts.Token));
 
+        _recordingMode = mode;
         _recording = true;
         RecordingStateChanged?.Invoke(true);
-        VoiceDiag("RECORDING_STARTED (VAD + Whisper GPU)");
+        VoiceDiag("RECORDING_STARTED source={0} mode={1} (VAD + Whisper GPU)", source, mode);
+        return VoiceDictationResult.Ok(string.Empty, "Dictation started.");
     }
 
     private void OnSamplesAvailable(float[] samples)
@@ -281,52 +306,14 @@ public sealed class VoiceController : IDisposable
 
     private void OnVoiceKeyUp()
     {
-        VoiceDiag("KEY_UP recording={0}", _recording);
-        if (!_recording) return;
+        VoiceDiag("KEY_UP recording={0} mode={1}", _recording, _recordingMode);
+        if (!_recording || _recordingMode != VoiceRecordingMode.HotkeyInjection)
+            return;
 
-        _recording = false;
-        RecordingStateChanged?.Invoke(false);
-
-        _audioCapture.Stop();
-        _audioCapture.RetainRawAudio = true;
-
-        // Flush any remaining speech that hasn't hit a silence gap
-        lock (_vadLock)
-        {
-            if (_inSpeech && _speechSampleCount >= MIN_SPEECH_SAMPLES)
-            {
-                FlushSpeechSegment(includeTailPad: false);
-            }
-        }
-
-        // Close the channel and wait for consumer to drain
-        _segmentChannel?.Writer.TryComplete();
-
-        try
-        {
-            var drained = _consumerTask?.Wait(FinalDrainTimeout) ?? true;
-            if (!drained)
-                VoiceDiag("DRAIN_TIMEOUT after {0:F0}s", FinalDrainTimeout.TotalSeconds);
-        }
-        catch (AggregateException) { }
-
-        if (KeyUpSettleDelay > TimeSpan.Zero)
-            Thread.Sleep(KeyUpSettleDelay);
-
-        var pendingText = _transcriptBuffer.Flush();
+        var result = StopRecordingAsync().GetAwaiter().GetResult();
+        var pendingText = result.Text;
         if (!string.IsNullOrWhiteSpace(pendingText))
         {
-            var dangerousMatch = _guard.CheckDestructiveCommand(pendingText);
-            if (dangerousMatch is not null)
-            {
-                VoiceDiag("DESTRUCTIVE_BLOCK_PENDING \"{0}\" in {1} chars", dangerousMatch, pendingText.Length);
-                PreserveTranscript(pendingText, "destructive-block");
-                StatusMessage?.Invoke($"Blocked dangerous command: {dangerousMatch}");
-                VoiceDiag("SESSION_COMPLETE");
-                _logger.LogInformation("KH: Voice session complete");
-                return;
-            }
-
             try
             {
                 var (success, message) = _injector.AppendAsync(pendingText + " ", _voiceTargetSessionId).GetAwaiter().GetResult();
@@ -344,9 +331,72 @@ public sealed class VoiceController : IDisposable
                 StatusMessage?.Invoke($"Voice inject error: {ex.Message}");
             }
         }
+        else if (!result.Success)
+        {
+            StatusMessage?.Invoke(result.Message);
+        }
 
         VoiceDiag("SESSION_COMPLETE");
         _logger.LogInformation("KH: Voice session complete");
+    }
+
+    private async Task<VoiceDictationResult> StopRecordingAsync(CancellationToken ct = default)
+    {
+        VoiceDiag("STOP_RECORDING recording={0} mode={1}", _recording, _recordingMode);
+        if (!_recording)
+            return VoiceDictationResult.Failed("No dictation is active.");
+
+        _recording = false;
+        var mode = _recordingMode;
+        _recordingMode = VoiceRecordingMode.None;
+        RecordingStateChanged?.Invoke(false);
+
+        _audioCapture.Stop();
+        _audioCapture.RetainRawAudio = true;
+
+        lock (_vadLock)
+        {
+            if (_inSpeech && _speechSampleCount >= MIN_SPEECH_SAMPLES)
+                FlushSpeechSegment(includeTailPad: false);
+        }
+
+        _segmentChannel?.Writer.TryComplete();
+
+        try
+        {
+            if (_consumerTask is not null)
+                await _consumerTask.WaitAsync(FinalDrainTimeout, ct);
+        }
+        catch (TimeoutException)
+        {
+            VoiceDiag("DRAIN_TIMEOUT mode={0} after {1:F0}s", mode, FinalDrainTimeout.TotalSeconds);
+        }
+        catch (OperationCanceledException)
+        {
+            VoiceDiag("DRAIN_CANCELLED mode={0}", mode);
+            return VoiceDictationResult.Failed("Dictation cancelled.");
+        }
+        catch (Exception ex)
+        {
+            VoiceDiag("DRAIN_ERROR {0}: {1}", ex.GetType().Name, ex.Message);
+        }
+
+        if (KeyUpSettleDelay > TimeSpan.Zero)
+            await Task.Delay(KeyUpSettleDelay, ct);
+
+        var pendingText = _transcriptBuffer.Flush();
+        if (string.IsNullOrWhiteSpace(pendingText))
+            return VoiceDictationResult.Ok(string.Empty, "Nothing captured.");
+
+        var dangerousMatch = _guard.CheckDestructiveCommand(pendingText);
+        if (dangerousMatch is not null)
+        {
+            VoiceDiag("DESTRUCTIVE_BLOCK_PENDING \"{0}\" in {1} chars", dangerousMatch, pendingText.Length);
+            PreserveTranscript(pendingText, "destructive-block");
+            return VoiceDictationResult.Failed($"Blocked dangerous command: {dangerousMatch}");
+        }
+
+        return VoiceDictationResult.Ok(pendingText, "Dictation complete.");
     }
 
     private async Task AppendRecognizedTextAsync(string text, CancellationToken ct)
@@ -442,4 +492,11 @@ public sealed class VoiceController : IDisposable
     }
 
     private sealed record SpeechSegment(float[] Samples, long SessionToken);
+
+    private enum VoiceRecordingMode
+    {
+        None,
+        HotkeyInjection,
+        DictationOnly
+    }
 }
