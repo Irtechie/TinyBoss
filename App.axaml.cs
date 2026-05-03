@@ -262,13 +262,16 @@ public class App : Application
                 renameItem.Click += (_, _) => ShowRenameDialog(capturedMonitor, capturedSlot, capturedTile.Alias ?? "");
                 windowMenu.Add(renameItem);
 
-                var bossifyItem = new NativeMenuItem("Bossify");
-                bossifyItem.Click += (_, _) => _ = BossifyWindowAsync(capturedMonitor, capturedSlot, capturedTile);
-                windowMenu.Add(bossifyItem);
+                if (!IsTerminalBossWindow(capturedTile))
+                {
+                    var bossifyItem = new NativeMenuItem("Bossify");
+                    bossifyItem.Click += (_, _) => _ = BossifyWindowAsync(capturedMonitor, capturedSlot, capturedTile);
+                    windowMenu.Add(bossifyItem);
 
-                var bossifyResumeItem = new NativeMenuItem("Bossify + resume");
-                bossifyResumeItem.Click += (_, _) => _ = BossifyResumeWindowAsync(capturedMonitor, capturedSlot, capturedTile);
-                windowMenu.Add(bossifyResumeItem);
+                    var bossifyResumeItem = new NativeMenuItem("Bossify + resume");
+                    bossifyResumeItem.Click += (_, _) => _ = BossifyResumeWindowAsync(capturedMonitor, capturedSlot, capturedTile);
+                    windowMenu.Add(bossifyResumeItem);
+                }
 
                 windowItem.Menu = windowMenu;
                 screenMenu.Add(windowItem);
@@ -288,6 +291,20 @@ public class App : Application
         var displayName = ts.Alias
             ?? (string.IsNullOrWhiteSpace(title) ? $"Window (slot {slot + 1})" : title);
         return displayName.Length > 44 ? displayName[..41] + "..." : displayName;
+    }
+
+    private static bool IsTerminalBossWindow(TileSlot tile)
+    {
+        try
+        {
+            using var process = Process.GetProcessById(tile.ProcessId);
+            return process.ProcessName.Equals("TerminalBoss", StringComparison.OrdinalIgnoreCase)
+                || process.ProcessName.Equals("BossTerminal", StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     // ── Tiling orchestration ─────────────────────────────────────────────────
