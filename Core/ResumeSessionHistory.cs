@@ -31,7 +31,7 @@ public static class ResumeSessionHistory
 
     public static void Append(ResumeSessionHistoryRecord record)
     {
-        if (string.IsNullOrWhiteSpace(record.Command))
+        if (!IsResumeCommand(record.Command))
             return;
 
         try
@@ -81,14 +81,23 @@ public static class ResumeSessionHistory
             return builder.ToString();
         }
 
-        for (var i = 0; i < records.Count; i++)
+        var displayRecords = records
+            .Where(record => IsResumeCommand(record.Command))
+            .GroupBy(record => NormalizeCommand(record.Command), StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.First())
+            .ToArray();
+
+        if (displayRecords.Length == 0)
         {
-            var record = records[i];
-            builder.AppendLine($"{i + 1}. {record.CapturedAt.ToLocalTime():yyyy-MM-dd HH:mm:ss} | {record.Name} | {record.Tool ?? "cli"}");
-            builder.AppendLine($"   cwd: {record.Cwd ?? "(unknown)"}");
-            builder.AppendLine($"   command: {record.Command}");
-            builder.AppendLine($"   slot: {record.Slot} monitor: {record.MonitorHandle}");
-            builder.AppendLine();
+            builder.AppendLine("No resume sessions captured yet.");
+            return builder.ToString();
+        }
+
+        for (var i = 0; i < displayRecords.Length; i++)
+        {
+            var record = displayRecords[i];
+            var name = string.IsNullOrWhiteSpace(record.Name) ? "Window" : record.Name.Trim();
+            builder.AppendLine($"{i + 1}. {name} : {record.Command.Trim()}");
         }
 
         return builder.ToString();
@@ -126,5 +135,16 @@ public static class ResumeSessionHistory
         {
             return null;
         }
+    }
+
+    private static string NormalizeCommand(string command)
+    {
+        return command.Trim();
+    }
+
+    private static bool IsResumeCommand(string? command)
+    {
+        return !string.IsNullOrWhiteSpace(command)
+            && command.Contains("resume", StringComparison.OrdinalIgnoreCase);
     }
 }

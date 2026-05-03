@@ -2,6 +2,12 @@ namespace TinyBoss.Core;
 
 public static class ResumeCommandExtractor
 {
+    private static readonly System.Text.RegularExpressions.Regex[] CommandPatterns =
+    [
+        new(@"\b(?:copilot|ghcp)\s+--resume=(?:""[^""]+""|'[^']+'|[^\s]+)", System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Compiled),
+        new(@"\b(?:codex|inferno|claude|qwen|ghcp)\s+resume\s+[A-Za-z0-9._:-]+", System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Compiled)
+    ];
+
     private static readonly string[] Prefixes =
     [
         "copilot ",
@@ -37,6 +43,13 @@ public static class ResumeCommandExtractor
         var lower = normalized.ToLowerInvariant();
         if (!lower.Contains("resume"))
             return null;
+
+        foreach (var pattern in CommandPatterns)
+        {
+            var match = pattern.Match(normalized);
+            if (match.Success)
+                return match.Value.Trim().Trim('`', '.', ';', '?');
+        }
 
         foreach (var prefix in Prefixes)
         {

@@ -9,6 +9,9 @@ public sealed class ResumeCommandExtractorTests
     [InlineData("copilot --resume=\"Configure OneDrive Output Path\"", "copilot --resume=\"Configure OneDrive Output Path\"")]
     [InlineData("copilot --resume=\"Evaluate Model Compatibility With Mcaps Copilot\"", "copilot --resume=\"Evaluate Model Compatibility With Mcaps Copilot\"")]
     [InlineData("codex resume 019dca28-149a-71a0-9c56-7350e30a9a55", "codex resume 019dca28-149a-71a0-9c56-7350e30a9a55")]
+    [InlineData("codex resume 019de5db-e1ea-7643-83f3-fe91b0da3a79  ?", "codex resume 019de5db-e1ea-7643-83f3-fe91b0da3a79")]
+    [InlineData("copilot --resume=\"Configure OneDrive Output Path\" mcaps 2", "copilot --resume=\"Configure OneDrive Output Path\"")]
+    [InlineData("copilot --resume=\"Optimize Claude Permissions\" ATV Toolkit", "copilot --resume=\"Optimize Claude Permissions\"")]
     [InlineData("inferno resume darkfactory-001", "inferno resume darkfactory-001")]
     [InlineData("> ghcp resume abc", "ghcp resume abc")]
     public void ExtractsKnownResumeCommands(string line, string expected)
