@@ -37,6 +37,10 @@ public sealed class VoiceController : IDisposable
     private Task? _consumerTask;
     private CancellationTokenSource? _sessionCts;
     private readonly VoiceTranscriptBuffer _transcriptBuffer = new();
+    private int _stopInFlight;
+    private int _injectInFlight;
+    private string? _lastInjectedText;
+    private DateTimeOffset _lastInjectedAt;
 
     // VAD tuning constants (16kHz sample rate)
     private const int SAMPLE_RATE = 16000;
@@ -284,35 +288,47 @@ public sealed class VoiceController : IDisposable
     {
         VoiceDiag("KEY_UP recording={0}", _recording);
         if (!_recording) return;
-
-        var result = StopRecordingAsync().GetAwaiter().GetResult();
-        var pendingText = result.Text;
-        if (!string.IsNullOrWhiteSpace(pendingText))
+        if (Interlocked.Exchange(ref _stopInFlight, 1) == 1)
         {
-            try
+            VoiceDiag("KEY_UP_IGNORED stop already in flight");
+            return;
+        }
+
+        try
+        {
+            var result = StopRecordingAsync().GetAwaiter().GetResult();
+            var pendingText = result.Text;
+            if (!string.IsNullOrWhiteSpace(pendingText))
             {
-                var (success, message) = _injector.AppendAsync(pendingText + " ", _voiceTargetSessionId).GetAwaiter().GetResult();
-                VoiceDiag("INJECT_PENDING success={0} chars={1} message=\"{2}\"", success, pendingText.Length, message);
-                if (!success)
+                try
                 {
-                    PreserveTranscript(pendingText, "inject-failed");
-                    StatusMessage?.Invoke(message);
+                    var (success, message) = InjectPendingTextOnceAsync(pendingText).GetAwaiter().GetResult();
+                    VoiceDiag("INJECT_PENDING success={0} chars={1} message=\"{2}\"", success, pendingText.Length, message);
+                    if (!success)
+                    {
+                        PreserveTranscript(pendingText, "inject-failed");
+                        StatusMessage?.Invoke(message);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    VoiceDiag("PENDING_INJECT_ERROR {0}: {1}", ex.GetType().Name, ex.Message);
+                    PreserveTranscript(pendingText, "inject-error");
+                    StatusMessage?.Invoke($"Voice inject error: {ex.Message}");
                 }
             }
-            catch (Exception ex)
+            else if (!result.Success)
             {
-                VoiceDiag("PENDING_INJECT_ERROR {0}: {1}", ex.GetType().Name, ex.Message);
-                PreserveTranscript(pendingText, "inject-error");
-                StatusMessage?.Invoke($"Voice inject error: {ex.Message}");
+                StatusMessage?.Invoke(result.Message);
             }
-        }
-        else if (!result.Success)
-        {
-            StatusMessage?.Invoke(result.Message);
-        }
 
-        VoiceDiag("SESSION_COMPLETE");
-        _logger.LogInformation("KH: Voice session complete");
+            VoiceDiag("SESSION_COMPLETE");
+            _logger.LogInformation("KH: Voice session complete");
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _stopInFlight, 0);
+        }
     }
 
     private async Task<(bool Success, string Text, string Message)> StopRecordingAsync(CancellationToken ct = default)
@@ -399,6 +415,48 @@ public sealed class VoiceController : IDisposable
             VoiceDiag("BUFFER_ERROR {0}: {1}", ex.GetType().Name, ex.Message);
             StatusMessage?.Invoke($"Voice buffer error: {ex.Message}");
         }
+    }
+
+    private async Task<(bool Success, string Message)> InjectPendingTextOnceAsync(string pendingText)
+    {
+        var normalized = NormalizeInjectedText(pendingText);
+        if (normalized.Length == 0)
+            return (true, "Nothing to append");
+
+        if (Interlocked.Exchange(ref _injectInFlight, 1) == 1)
+        {
+            VoiceDiag("INJECT_SKIPPED already in flight");
+            return (false, "Voice injection already in flight; skipped duplicate append.");
+        }
+
+        try
+        {
+            var now = DateTimeOffset.UtcNow;
+            if (string.Equals(_lastInjectedText, normalized, StringComparison.Ordinal)
+                && now - _lastInjectedAt < TimeSpan.FromSeconds(20))
+            {
+                VoiceDiag("INJECT_SKIPPED duplicate chars={0}", normalized.Length);
+                return (true, "Skipped duplicate dictation.");
+            }
+
+            var result = await _injector.AppendAsync(normalized + " ", _voiceTargetSessionId);
+            if (result.Success)
+            {
+                _lastInjectedText = normalized;
+                _lastInjectedAt = now;
+            }
+
+            return result;
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _injectInFlight, 0);
+        }
+    }
+
+    private static string NormalizeInjectedText(string text)
+    {
+        return string.Join(' ', text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)).Trim();
     }
 
     private static float CalculateRms(IReadOnlyList<float> samples, int offset = 0, int count = -1)

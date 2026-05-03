@@ -208,19 +208,10 @@ public sealed class TextInjector
     private async Task<FocusedAppendAttempt> AppendViaFocusedWindowAsync(string text, CancellationToken ct)
     {
         var target = CaptureFocusedWindowTarget();
-        if (target.IsTerminal && ShouldUseConsoleInputBuffer(target, text))
-        {
-            if (TryWriteConsoleInputBuffer(text, target, out var consoleMessage))
-                return new FocusedAppendAttempt(true, consoleMessage);
-
-            _logger.LogInformation(
-                "KH: Voice console input buffer failed for {N} chars target={Target}: {Reason}",
-                text.Length, target.Description, consoleMessage);
-        }
-        else if (target.IsTerminal)
+        if (target.IsTerminal)
         {
             _logger.LogDebug(
-                "KH: Skipping console input buffer for {N} chars target={Target}; using clipboard paste",
+                "KH: Voice dictation uses clipboard paste only for {N} chars target={Target}",
                 text.Length, target.Description);
         }
 
@@ -420,9 +411,20 @@ public sealed class TextInjector
         if (sent == inputs.Length)
             return new PasteInputAttempt(true, "clipboard/ctrl+v");
 
+        ReleasePasteChordKeys();
         return new PasteInputAttempt(
             false,
             $"SendInput paste chord ctrl+v sent {sent}/{inputs.Length} lastError={Marshal.GetLastWin32Error()}");
+    }
+
+    private static void ReleasePasteChordKeys()
+    {
+        var cleanup = new[]
+        {
+            new INPUT { type = INPUT_KEYBOARD, wVk = VK_V, dwFlags = KEYEVENTF_KEYUP },
+            new INPUT { type = INPUT_KEYBOARD, wVk = VK_CONTROL, dwFlags = KEYEVENTF_KEYUP },
+        };
+        SendInput((uint)cleanup.Length, cleanup, Marshal.SizeOf<INPUT>());
     }
 
     private static bool TryReadClipboardText(out string? text)
