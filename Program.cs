@@ -121,21 +121,7 @@ app.MapGet("/health", (SessionRegistry registry, TilingCoordinator tiling) => Re
     transport = "pipe:TinyBoss + tcp:8033"
 }));
 
-app.MapPost("/api/dictation/start", (VoiceController voice) =>
-{
-    var result = voice.StartDictationOnly();
-    return result.Success
-        ? Results.Ok(result)
-        : Results.Conflict(result);
-});
-
-app.MapPost("/api/dictation/stop", async (VoiceController voice, CancellationToken ct) =>
-{
-    var result = await voice.StopDictationOnlyAsync(ct);
-    return result.Success
-        ? Results.Ok(result)
-        : Results.BadRequest(result);
-});
+app.MapGet("/api/voice/status", (VoiceController voice) => Results.Ok(voice.GetVoiceStatus()));
 
 // ── Bridge DI to Avalonia ────────────────────────────────────────────────────
 TinyBossServices.Initialize(app.Services);
