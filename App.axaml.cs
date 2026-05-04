@@ -750,6 +750,10 @@ public class App : Application
         {
             var candidates = new[]
             {
+                Environment.GetEnvironmentVariable("TERMINALBOSS_LAUNCHER_PATH"),
+                Path.Combine(@"E:\Dev\AI\TerminalBoss", "TerminalBoss.cmd"),
+                Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "TerminalBoss", "TerminalBoss.cmd")),
+                Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "TerminalBoss", "TerminalBoss.cmd")),
                 Environment.GetEnvironmentVariable("TERMINALBOSS_EXE_PATH"),
                 Environment.GetEnvironmentVariable("BOSS" + "TERMINAL_EXE_PATH"),
                 Path.Combine(AppContext.BaseDirectory, "TerminalBoss.exe"),
