@@ -205,14 +205,92 @@ public sealed class TextInjector
         }
     }
 
+    public VoiceInjectionTarget CaptureVoiceTarget(string? targetSessionId)
+    {
+        if (targetSessionId is not null)
+        {
+            var session = _registry.Get(targetSessionId);
+            return session is null
+                ? new VoiceInjectionTarget(targetSessionId, nint.Zero, $"missing session {targetSessionId}")
+                : new VoiceInjectionTarget(targetSessionId, nint.Zero, $"session={session.Command} id={session.SessionId}");
+        }
+
+        var focusedSession = FindFocusedManagedSession();
+        if (focusedSession is not null)
+            return new VoiceInjectionTarget(
+                focusedSession.SessionId,
+                nint.Zero,
+                $"focused session={focusedSession.Command} id={focusedSession.SessionId}");
+
+        var focused = CaptureFocusedWindowTarget();
+        return new VoiceInjectionTarget(null, focused.Hwnd, focused.Description);
+    }
+
+    public async Task<(bool Success, string Message)> AppendAsync(
+        string text,
+        VoiceInjectionTarget? target,
+        CancellationToken ct = default)
+    {
+        if (target is null)
+            return await AppendAsync(text, targetSessionId: null, ct);
+
+        if (target.SessionId is not null)
+            return await AppendAsync(text, target.SessionId, ct);
+
+        if (target.WindowHandle == nint.Zero || !IsWindow(target.WindowHandle))
+            return (false, $"Captured voice target is gone ({target.Description})");
+
+        var append = await AppendViaTargetWindowAsync(text, target.WindowHandle, ct);
+        _logger.LogInformation("KH: Voice append into captured window success={Success} chars={N} method={Method}",
+            append.Success, text.Length, append.Message);
+        return append.Success
+            ? (true, $"Typed into captured window ({append.Message})")
+            : (false, append.Message);
+    }
+
     private async Task<FocusedAppendAttempt> AppendViaFocusedWindowAsync(string text, CancellationToken ct)
     {
         var target = CaptureFocusedWindowTarget();
+        return await AppendViaTargetAsync(text, target, focusFirst: false, ct);
+    }
+
+    private async Task<FocusedAppendAttempt> AppendViaTargetWindowAsync(string text, nint hwnd, CancellationToken ct)
+    {
+        var target = CaptureWindowTarget(hwnd);
+        return await AppendViaTargetAsync(text, target, focusFirst: true, ct);
+    }
+
+    private async Task<FocusedAppendAttempt> AppendViaTargetAsync(
+        string text,
+        FocusedWindowTarget target,
+        bool focusFirst,
+        CancellationToken ct)
+    {
+        if (target.Hwnd == nint.Zero || !IsWindow(target.Hwnd))
+            return new FocusedAppendAttempt(false, $"target window gone; target={target.Description}");
+
+        if (focusFirst)
+        {
+            if (!SetForegroundWindow(target.Hwnd))
+                return new FocusedAppendAttempt(false, $"target did not accept focus; target={target.Description}");
+
+            await Task.Delay(WindowFocusSettleDelayMs, ct);
+            var focused = GetForegroundWindow();
+            if (focused != target.Hwnd)
+                return new FocusedAppendAttempt(false, $"target not foreground after focus; focused=0x{focused:X}; target={target.Description}");
+        }
+
         if (target.IsTerminal)
         {
             _logger.LogDebug(
-                "KH: Voice dictation uses clipboard paste only for {N} chars target={Target}",
+                "KH: Voice dictation targeting terminal for {N} chars target={Target}",
                 text.Length, target.Description);
+        }
+
+        if (ShouldUseConsoleInputBuffer(target, text) &&
+            TryWriteConsoleInputBuffer(text, target, out var consoleMessage))
+        {
+            return new FocusedAppendAttempt(true, consoleMessage);
         }
 
         var paste = TryPasteViaClipboard(text);
@@ -635,6 +713,14 @@ public sealed class TextInjector
     private static FocusedWindowTarget CaptureFocusedWindowTarget()
     {
         var hwnd = GetForegroundWindow();
+        if (hwnd == nint.Zero)
+            return FocusedWindowTarget.Unknown;
+
+        return CaptureWindowTarget(hwnd);
+    }
+
+    private static FocusedWindowTarget CaptureWindowTarget(nint hwnd)
+    {
         if (hwnd == nint.Zero)
             return FocusedWindowTarget.Unknown;
 

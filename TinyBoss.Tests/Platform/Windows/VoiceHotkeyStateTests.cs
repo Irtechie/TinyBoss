@@ -74,6 +74,24 @@ public sealed class VoiceHotkeyStateTests
     }
 
     [Fact]
+    public void RightAltVoiceKeySuppressesMixedSpecificAndGenericAltMessages()
+    {
+        var state = new VoiceHotkeyState();
+
+        var rightAltDown = state.ProcessKeyEvent(VK_RMENU, isKeyDown: true, modifiers: 0, key: VK_RMENU);
+        var genericAltDown = state.ProcessKeyEvent(VK_MENU, isKeyDown: true, modifiers: 0, key: VK_RMENU);
+        var genericAltUp = state.ProcessKeyEvent(VK_MENU, isKeyDown: false, modifiers: 0, key: VK_RMENU);
+        var rightAltUp = state.ProcessKeyEvent(VK_RMENU, isKeyDown: false, modifiers: 0, key: VK_RMENU);
+
+        Assert.True(rightAltDown.Suppress);
+        Assert.True(rightAltDown.Started);
+        Assert.True(genericAltDown.Suppress);
+        Assert.True(genericAltUp.Suppress);
+        Assert.True(rightAltUp.Suppress);
+        Assert.True(rightAltUp.Stopped);
+    }
+
+    [Fact]
     public void ComboVoiceStaysActiveUntilWholeChordIsReleased()
     {
         var state = new VoiceHotkeyState();

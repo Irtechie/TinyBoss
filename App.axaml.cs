@@ -2,6 +2,7 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Markup.Xaml;
+using Avalonia.Media;
 using Avalonia.Threading;
 using System.Diagnostics;
 using TinyBoss.Voice;
@@ -22,6 +23,7 @@ public class App : Application
     private HotKeyListener? _hotkeys;
     private TinyBossConfig? _config;
     private TileOverlay? _overlay;
+    private Window? _recordingIndicator;
     private string? _voiceTargetSessionId;
     private string? _iconPath;
     private bool _shutdownStarted;
@@ -118,7 +120,63 @@ public class App : Application
         {
             if (_trayIcon is null) return;
             _trayIcon.ToolTipText = recording ? "TinyBoss 🔴 Recording..." : "TinyBoss";
+            SetRecordingIndicator(recording);
         });
+    }
+
+    private void SetRecordingIndicator(bool recording)
+    {
+        if (!recording)
+        {
+            _recordingIndicator?.Close();
+            _recordingIndicator = null;
+            return;
+        }
+
+        if (_recordingIndicator is not null)
+            return;
+
+        var dot = new Border
+        {
+            Width = 18,
+            Height = 18,
+            CornerRadius = new CornerRadius(9),
+            Background = Brushes.Red,
+            BoxShadow = BoxShadows.Parse("0 0 10 2 #AAFF0000")
+        };
+
+        _recordingIndicator = new Window
+        {
+            Width = 42,
+            Height = 42,
+            CanResize = false,
+            ShowInTaskbar = false,
+            SystemDecorations = SystemDecorations.None,
+            Topmost = true,
+            Background = Brushes.Transparent,
+            TransparencyLevelHint = [WindowTransparencyLevel.Transparent],
+            Content = new Grid
+            {
+                Children = { dot },
+                HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Center,
+                VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center
+            }
+        };
+
+        PositionRecordingIndicator(_recordingIndicator);
+        _recordingIndicator.Show();
+    }
+
+    private static void PositionRecordingIndicator(Window indicator)
+    {
+        var screen = indicator.Screens.Primary ?? indicator.Screens.All.FirstOrDefault();
+        if (screen is null)
+            return;
+
+        var work = screen.WorkingArea;
+        indicator.Position = new PixelPoint(
+            work.X + work.Width - 72,
+            work.Y + work.Height - 92);
     }
 
     private void OnVoiceStatusMessage(string message)
@@ -1084,6 +1142,8 @@ public class App : Application
         try { _hotkeys?.SetOverlayActive(false); } catch { }
         try { _overlay?.Close(); } catch { }
         _overlay = null;
+        try { _recordingIndicator?.Close(); } catch { }
+        _recordingIndicator = null;
         _currentPaneBounds = null;
 
         try { _settingsWindow?.Close(); } catch { }

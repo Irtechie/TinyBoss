@@ -163,7 +163,7 @@ public sealed class HotKeyListener : IDisposable
                 voiceReleaseMisses = 0;
             }
 
-            if (PeekMessage(out var msg, _hwnd, 0, 0, PM_REMOVE))
+            if (PeekMessage(out var msg, nint.Zero, 0, 0, PM_REMOVE))
             {
                 if (msg.message == WM_HOTKEY)
                 {

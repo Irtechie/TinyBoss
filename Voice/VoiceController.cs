@@ -41,6 +41,7 @@ public sealed class VoiceController : IDisposable
     private int _injectInFlight;
     private string? _lastInjectedText;
     private DateTimeOffset _lastInjectedAt;
+    private VoiceInjectionTarget? _capturedTarget;
 
     // VAD tuning constants (16kHz sample rate)
     private const int SAMPLE_RATE = 16000;
@@ -122,6 +123,7 @@ public sealed class VoiceController : IDisposable
             _speechSampleCount = 0;
         }
         _transcriptBuffer.Clear();
+        _capturedTarget = _injector.CaptureVoiceTarget(_voiceTargetSessionId);
 
         _sessionCts?.Cancel();
         _sessionCts?.Dispose();
@@ -133,7 +135,7 @@ public sealed class VoiceController : IDisposable
 
         _recording = true;
         RecordingStateChanged?.Invoke(true);
-        VoiceDiag("RECORDING_STARTED (VAD + Whisper GPU)");
+        VoiceDiag("RECORDING_STARTED target=\"{0}\" (VAD + Whisper GPU)", _capturedTarget.Description);
     }
 
     private void OnSamplesAvailable(float[] samples)
@@ -343,8 +345,12 @@ public sealed class VoiceController : IDisposable
         _audioCapture.Stop();
         _audioCapture.RetainRawAudio = true;
 
+        float[] fallbackSamples;
         lock (_vadLock)
         {
+            fallbackSamples = _sampleBuffer.Count >= MIN_SPEECH_SAMPLES
+                ? _sampleBuffer.ToArray()
+                : [];
             if (_inSpeech && _speechSampleCount >= MIN_SPEECH_SAMPLES)
                 FlushSpeechSegment(includeTailPad: false);
         }
@@ -374,6 +380,11 @@ public sealed class VoiceController : IDisposable
             await Task.Delay(KeyUpSettleDelay, ct);
 
         var pendingText = _transcriptBuffer.Flush();
+        if (string.IsNullOrWhiteSpace(pendingText) && fallbackSamples.Length >= MIN_SPEECH_SAMPLES)
+        {
+            pendingText = await TranscribeFallbackSessionAsync(fallbackSamples, ct);
+        }
+
         if (string.IsNullOrWhiteSpace(pendingText))
             return (true, string.Empty, "Nothing captured.");
 
@@ -386,6 +397,40 @@ public sealed class VoiceController : IDisposable
         }
 
         return (true, pendingText, "Dictation complete.");
+    }
+
+    private async Task<string> TranscribeFallbackSessionAsync(float[] samples, CancellationToken ct)
+    {
+        try
+        {
+            VoiceDiag("FALLBACK_TRANSCRIBE samples={0} seconds={1:F2}", samples.Length, samples.Length / (float)SAMPLE_RATE);
+            var result = await _whisper.TranscribeAsync(samples, ct);
+            if (result is null || string.IsNullOrWhiteSpace(result.Text))
+            {
+                VoiceDiag("FALLBACK_EMPTY");
+                return string.Empty;
+            }
+
+            if (!_guard.IsValidTranscription(result.Text, result.NoSpeechProb, result.Probability))
+            {
+                VoiceDiag("FALLBACK_GUARD_REJECT \"{0}\" noSpeech={1:F2} logProb={2:F2}",
+                    result.Text, result.NoSpeechProb, result.Probability);
+                return string.Empty;
+            }
+
+            var text = result.Text.Trim();
+            VoiceDiag("FALLBACK_ACCEPT chars={0}", text.Length);
+            return text;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            VoiceDiag("FALLBACK_ERROR {0}: {1}", ex.GetType().Name, ex.Message);
+            return string.Empty;
+        }
     }
 
     private async Task AppendRecognizedTextAsync(string text, CancellationToken ct)
@@ -439,7 +484,7 @@ public sealed class VoiceController : IDisposable
                 return (true, "Skipped duplicate dictation.");
             }
 
-            var result = await _injector.AppendAsync(normalized + " ", _voiceTargetSessionId);
+            var result = await _injector.AppendAsync(normalized + " ", _capturedTarget);
             if (result.Success)
             {
                 _lastInjectedText = normalized;
