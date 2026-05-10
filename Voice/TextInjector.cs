@@ -147,11 +147,19 @@ public sealed class TextInjector
 
         var textWithNewline = text.EndsWith('\n') ? text : text + "\n";
         var append = await AppendViaFocusedWindowAsync(textWithNewline, ct);
+        var submitMessage = "";
+        if (append.Success && append.UsedClipboard)
+        {
+            await Task.Delay(PasteDeliveryDelayMs, ct);
+            var submit = SendEnterKey();
+            submitMessage = submit.Success ? "; submitted with Enter" : $"; Enter submit failed ({submit.Message})";
+        }
+
         _logger.LogInformation("KH: Window inject into HWND 0x{Hwnd:X} success={Success} chars={N} method={Method}",
-            hwnd, append.Success, text.Length, append.Message);
+            hwnd, append.Success, text.Length, append.Message + submitMessage);
 
         return append.Success
-            ? (true, $"Injected into window 0x{hwnd:X} ({append.Message})")
+            ? (true, $"Injected into window 0x{hwnd:X} ({append.Message}{submitMessage})")
             : (false, append.Message);
     }
 
@@ -306,7 +314,7 @@ public sealed class TextInjector
         }
 
         await Task.Delay(PasteDeliveryDelayMs, ct);
-        return new FocusedAppendAttempt(true, $"{paste.Method}; target={target.Description}");
+        return new FocusedAppendAttempt(true, $"{paste.Method}; target={target.Description}", UsedClipboard: true);
     }
 
     private static bool ShouldUseConsoleInputBuffer(FocusedWindowTarget target, string text)
@@ -431,9 +439,9 @@ public sealed class TextInjector
         {
             KeyDown = keyDown ? 1 : 0,
             RepeatCount = 1,
-            VirtualKeyCode = VK_PACKET,
+            VirtualKeyCode = c is '\r' or '\n' ? VK_RETURN : VK_PACKET,
             VirtualScanCode = 0,
-            UnicodeChar = (ushort)c,
+            UnicodeChar = c is '\r' or '\n' ? (ushort)0 : (ushort)c,
             ControlKeyState = 0
         }
     };
@@ -493,6 +501,23 @@ public sealed class TextInjector
         return new PasteInputAttempt(
             false,
             $"SendInput paste chord ctrl+v sent {sent}/{inputs.Length} lastError={Marshal.GetLastWin32Error()}");
+    }
+
+    private static PasteInputAttempt SendEnterKey()
+    {
+        INPUT[] inputs =
+        [
+            new INPUT { type = INPUT_KEYBOARD, wVk = VK_RETURN },
+            new INPUT { type = INPUT_KEYBOARD, wVk = VK_RETURN, dwFlags = KEYEVENTF_KEYUP },
+        ];
+        var sent = SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>());
+        if (sent == inputs.Length)
+            return new PasteInputAttempt(true, "enter");
+
+        SendInput(1, [new INPUT { type = INPUT_KEYBOARD, wVk = VK_RETURN, dwFlags = KEYEVENTF_KEYUP }], Marshal.SizeOf<INPUT>());
+        return new PasteInputAttempt(
+            false,
+            $"SendInput enter sent {sent}/{inputs.Length} lastError={Marshal.GetLastWin32Error()}");
     }
 
     private static void ReleasePasteChordKeys()
@@ -765,6 +790,7 @@ public sealed class TextInjector
     private const ushort KEY_EVENT = 0x0001;
     private const ushort VK_CONTROL = 0x11;
     private const ushort VK_PACKET = 0xE7;
+    private const ushort VK_RETURN = 0x0D;
     private const ushort VK_V = 0x56;
     private const uint CF_UNICODETEXT = 13;
     private const uint GMEM_MOVEABLE = 0x0002;
@@ -901,7 +927,7 @@ public sealed class TextInjector
 
     private sealed record PasteInputAttempt(bool Success, string Message);
 
-    private sealed record FocusedAppendAttempt(bool Success, string Message);
+    private sealed record FocusedAppendAttempt(bool Success, string Message, bool UsedClipboard = false);
 
     private sealed record FocusedWindowTarget(
         nint Hwnd,
