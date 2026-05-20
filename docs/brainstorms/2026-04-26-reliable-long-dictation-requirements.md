@@ -32,7 +32,9 @@ The feature should make dictation durable first, then target-aware. TinyBoss sho
 - R5. Focused arbitrary windows must be classified before insertion: managed CLI, visible terminal, native edit control, browser/web editor, or unknown.
 - R6. For native edit controls that expose a writable UIA value, TinyBoss may use UI Automation as a direct write path.
 - R7. For browser/web editors and unknown targets, TinyBoss must use a conservative simulated-input path unless clipboard paste can be verified.
-- R8. Clipboard paste, when used, must use a real TinyBoss-owned clipboard window/handle, wait long enough for the target to consume paste, and restore the user's clipboard only after success/failure is known.
+- R8. Clipboard paste, when used, must use a real TinyBoss-owned clipboard window/handle and wait long enough for the target to consume paste.
+- R8a. A completed dictation owns the clipboard until the next recording or explicit clear. Manual paste/right-click after a missed paste must retry the newest transcript, never an older clipboard value.
+- R8b. TinyBoss may restore pre-dictation clipboard content only after it has verified successful target delivery or after the user explicitly chooses to restore it.
 
 **Verification and Fallback**
 - R9. Each insertion attempt must record target hwnd, process name, transport, character count, transcript hash/id, and verification result.
@@ -64,6 +66,7 @@ The feature should make dictation durable first, then target-aware. TinyBoss sho
 - Treat this as a delivery reliability problem, not an STT accuracy problem: the latest logs showed recognized long chunks followed by a visible target that only received the final short chunk.
 - Prefer verified stdin/direct-control paths over clipboard and raw keyboard simulation: research shows clipboard and keyboard injection can be accepted by Windows while still failing at the target application layer.
 - Preserve first, inject second: the transcript is the user's data and should survive transport failures.
+- 2026-05-13 update: leave the latest dictation on the clipboard as the primary manual retry path. The previous "restore old clipboard shortly after paste" behavior can paste stale text when the synthetic paste misses the target.
 
 ## Approach Options
 
@@ -87,4 +90,7 @@ Recommendation: Option C. It turns this from a best-effort paste trick into a re
 
 ## Next Steps
 
--> `/ce-plan` for structured implementation planning.
+The first timing/buffering slice was implemented by `docs/plans/2026-04-26-003-fix-reliable-long-dictation-plan.md`.
+
+Remaining work should continue through the current kanban plan set:
+`docs/plans/2026-05-13-000-kanban-mic-to-screen-reliability-manifest.md`.

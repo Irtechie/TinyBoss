@@ -2,7 +2,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         x:Class="TinyBoss.SettingsWindow"
         Title="TinyBoss Settings"
-        Width="420" Height="540"
+        Width="420" Height="600"
         CanResize="False"
         ShowInTaskbar="True"
         WindowStartupLocation="CenterScreen"
@@ -32,6 +32,12 @@
     <StackPanel Spacing="4">
       <TextBlock Text="Microphone" FontWeight="SemiBold" />
       <ComboBox x:Name="MicCombo" HorizontalAlignment="Stretch" />
+    </StackPanel>
+
+    <!-- Speech model -->
+    <StackPanel Spacing="4">
+      <TextBlock Text="Speech Model" FontWeight="SemiBold" />
+      <ComboBox x:Name="WhisperModelCombo" HorizontalAlignment="Stretch" />
     </StackPanel>
 
     <!-- Monitors -->

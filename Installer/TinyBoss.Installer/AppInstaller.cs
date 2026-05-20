@@ -1,9 +1,11 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Win32;
+using Whisper.net.Ggml;
 
 namespace TinyBoss.Installer;
 
@@ -16,6 +18,10 @@ public static class AppInstaller
     public static string InstallDir => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "Programs", "TinyBoss");
+
+    public static string ModelDir => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "TinyBoss", "models");
 
     private const string UninstallRegistryPath =
         @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\TinyBoss";
@@ -70,6 +76,20 @@ public static class AppInstaller
         return result.ExitCode == 0
             ? new CheckResult(true, "Scheduled task", "Runs elevated at Windows logon")
             : new CheckResult(false, "", "Elevated startup task not registered");
+    }
+
+    public static Task<CheckResult> DetectWhisperModel(CancellationToken ct)
+    {
+        var model = ResolveConfiguredWhisperModel();
+        var path = Path.Combine(ModelDir, model.FileName);
+        if (!File.Exists(path))
+            return Task.FromResult(new CheckResult(false, "", $"{model.Id} not downloaded"));
+
+        var info = new FileInfo(path);
+        if (info.Length < model.MinBytes)
+            return Task.FromResult(new CheckResult(false, "", "Whisper model looks incomplete"));
+
+        return Task.FromResult(new CheckResult(true, model.Id, $"{model.FileName} ({info.Length / 1024 / 1024} MB)"));
     }
 
     // ── Installation ─────────────────────────────────────────────────────
@@ -134,6 +154,67 @@ public static class AppInstaller
         var result = await DetectShortcuts(ct);
         progress(100, result.Success ? "Shortcuts created ✅" : result.Message);
         return result;
+    }
+
+    public static async Task<CheckResult> InstallWhisperModel(
+        Action<int, string> progress, CancellationToken ct)
+    {
+        progress(5, "Preparing Whisper model directory...");
+        Directory.CreateDirectory(ModelDir);
+
+        var model = ResolveConfiguredWhisperModel();
+        var path = Path.Combine(ModelDir, model.FileName);
+        var tmpPath = path + ".tmp";
+
+        try
+        {
+            if (File.Exists(tmpPath))
+                File.Delete(tmpPath);
+
+            progress(15, $"Downloading {model.Id}...");
+            using var httpClient = new HttpClient();
+            var downloader = new WhisperGgmlDownloader(httpClient);
+            await using var modelStream = await downloader.GetGgmlModelAsync(
+                model.GgmlType,
+                QuantizationType.NoQuantization,
+                ct);
+            await using var fileStream = File.Create(tmpPath);
+            await modelStream.CopyToAsync(fileStream, ct);
+            await fileStream.FlushAsync(ct);
+
+            progress(85, "Installing Whisper model...");
+            File.Move(tmpPath, path, overwrite: true);
+
+            var detect = await DetectWhisperModel(ct);
+            progress(100, detect.Success ? "Whisper model ready ✅" : detect.Message);
+            return detect;
+        }
+        catch (Exception ex)
+        {
+            try { File.Delete(tmpPath); } catch { /* best effort */ }
+            return new CheckResult(false, "", ex.Message);
+        }
+    }
+
+    private static InstallerWhisperModel ResolveConfiguredWhisperModel()
+    {
+        var configPath = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "TinyBoss",
+            "tinyboss.json");
+
+        if (File.Exists(configPath))
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(File.ReadAllText(configPath));
+                if (doc.RootElement.TryGetProperty("whisperModel", out var prop))
+                    return InstallerWhisperModelCatalog.Resolve(prop.GetString());
+            }
+            catch { /* A bad config should not block installing the default model. */ }
+        }
+
+        return InstallerWhisperModelCatalog.Resolve(null);
     }
 
     public static Task<CheckResult> RegisterApp(

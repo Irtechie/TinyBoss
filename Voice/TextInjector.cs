@@ -18,7 +18,6 @@ public sealed class TextInjector
 {
     private readonly SessionRegistry _registry;
     private readonly ILogger<TextInjector> _logger;
-    private const int ClipboardRestoreDelayMs = 1500;
     private const int ClipboardOpenAttempts = 24;
     private const int ClipboardOpenRetryDelayMs = 25;
     private const int WindowFocusSettleDelayMs = 50;
@@ -145,10 +144,11 @@ public sealed class TextInjector
             return (false, message);
         }
 
+        var target = CaptureWindowTarget(hwnd);
         var textWithNewline = text.EndsWith('\n') ? text : text + "\n";
-        var append = await AppendViaFocusedWindowAsync(textWithNewline, ct);
+        var append = await AppendViaTargetAsync(textWithNewline, target, focusFirst: false, ct);
         var submitMessage = "";
-        if (append.Success && append.UsedClipboard)
+        if (append.Success && WindowInjectSubmitPolicy.ShouldSendExplicitEnter(target.IsTerminal, append.UsedClipboard))
         {
             await Task.Delay(PasteDeliveryDelayMs, ct);
             var submit = SendEnterKey();
@@ -288,25 +288,29 @@ public sealed class TextInjector
                 return new FocusedAppendAttempt(false, $"target not foreground after focus; focused=0x{focused:X}; target={target.Description}");
         }
 
+        var deliveryText = TerminalDictationSubmitPolicy.PrepareText(text, target.IsTerminal);
+
         if (target.IsTerminal)
         {
             _logger.LogDebug(
                 "KH: Voice dictation targeting terminal for {N} chars target={Target}",
-                text.Length, target.Description);
+                deliveryText.Length, target.Description);
         }
 
-        if (ShouldUseConsoleInputBuffer(target, text) &&
-            TryWriteConsoleInputBuffer(text, target, out var consoleMessage))
+        ClearConsoleSelectionModeIfNeeded(target);
+
+        if (ShouldUseConsoleInputBuffer(target, deliveryText) &&
+            TryWriteConsoleInputBuffer(deliveryText, target, out var consoleMessage))
         {
             return new FocusedAppendAttempt(true, consoleMessage);
         }
 
-        var paste = TryPasteViaClipboard(text);
+        var paste = TryPasteViaClipboard(deliveryText);
         if (!paste.Success)
         {
             _logger.LogInformation(
                 "KH: Voice clipboard paste failed for {N} chars target={Target}: {Reason}",
-                text.Length, target.Description, paste.Method);
+                deliveryText.Length, target.Description, paste.Method);
 
             return new FocusedAppendAttempt(
                 false,
@@ -326,6 +330,62 @@ public sealed class TextInjector
             return false;
 
         return true;
+    }
+
+    private void ClearConsoleSelectionModeIfNeeded(FocusedWindowTarget target)
+    {
+        if (!target.ClassName.Equals("ConsoleWindowClass", StringComparison.OrdinalIgnoreCase) ||
+            target.ProcessId == 0)
+        {
+            return;
+        }
+
+        if (!TryGetConsoleSelectionActive(target.ProcessId, out var active, out var reason) || !active)
+            return;
+
+        var escape = SendEscapeKey();
+        _logger.LogInformation(
+            "KH: Cleared console selection mode success={Success} method={Method} reason={Reason} target={Target}",
+            escape.Success,
+            escape.Message,
+            reason,
+            target.Description);
+    }
+
+    private static bool TryGetConsoleSelectionActive(uint processId, out bool active, out string reason)
+    {
+        active = false;
+        reason = string.Empty;
+
+        var attached = AttachConsole(processId);
+        if (!attached && Marshal.GetLastWin32Error() == ErrorAccessDenied)
+        {
+            FreeConsole();
+            attached = AttachConsole(processId);
+        }
+
+        if (!attached)
+        {
+            reason = $"AttachConsole failed lastError={Marshal.GetLastWin32Error()}";
+            return false;
+        }
+
+        try
+        {
+            if (!GetConsoleSelectionInfo(out var info))
+            {
+                reason = $"GetConsoleSelectionInfo failed lastError={Marshal.GetLastWin32Error()}";
+                return false;
+            }
+
+            active = (info.Flags & ConsoleSelectionInProgress) != 0;
+            reason = $"selectionFlags=0x{info.Flags:X}";
+            return true;
+        }
+        finally
+        {
+            FreeConsole();
+        }
     }
 
     private static bool UseConsoleInputBufferOverride()
@@ -448,39 +508,24 @@ public sealed class TextInjector
 
     private static ClipboardPasteAttempt TryPasteViaClipboard(string text)
     {
-        string? previousText = null;
-        var hadText = TryReadClipboardText(out previousText);
         var formatCount = CountClipboardFormats();
 
+        // Dictation uses clipboard as a recovery path. Put the newest transcript
+        // there before paste, and leave it there if target paste is missed.
+        TrySetClipboardText(string.Empty, out _);
         if (!TrySetClipboardText(text, out var setFailure))
-        {
-            if (hadText)
-                TrySetClipboardText(previousText ?? string.Empty, out _);
             return new ClipboardPasteAttempt(false, setFailure);
-        }
 
         var pasteInput = SendPasteChord();
+        var decision = DictationClipboardPolicy.AfterPasteAttempt(pasteInput.Success);
         if (!pasteInput.Success)
-        {
-            if (hadText)
-                TrySetClipboardText(previousText ?? string.Empty, out _);
-            return new ClipboardPasteAttempt(false, pasteInput.Message);
-        }
-
-        if (hadText)
-        {
-            _ = Task.Run(async () =>
-            {
-                await Task.Delay(ClipboardRestoreDelayMs);
-                TrySetClipboardText(previousText ?? string.Empty, out _);
-            });
-
-            return new ClipboardPasteAttempt(true, "clipboard/ctrl+v (restored previous text)");
-        }
+            return new ClipboardPasteAttempt(
+                false,
+                $"dictation clipboard prepared; paste chord sent failed; {pasteInput.Message}; {decision.Message}");
 
         var method = formatCount > 0
-            ? "clipboard/ctrl+v (replaced non-text clipboard)"
-            : "clipboard/ctrl+v";
+            ? $"dictation clipboard prepared; paste chord sent; {decision.Message}; replaced prior clipboard data"
+            : $"dictation clipboard prepared; paste chord sent; {decision.Message}";
         return new ClipboardPasteAttempt(true, method);
     }
 
@@ -518,6 +563,23 @@ public sealed class TextInjector
         return new PasteInputAttempt(
             false,
             $"SendInput enter sent {sent}/{inputs.Length} lastError={Marshal.GetLastWin32Error()}");
+    }
+
+    private static PasteInputAttempt SendEscapeKey()
+    {
+        INPUT[] inputs =
+        [
+            new INPUT { type = INPUT_KEYBOARD, wVk = VK_ESCAPE },
+            new INPUT { type = INPUT_KEYBOARD, wVk = VK_ESCAPE, dwFlags = KEYEVENTF_KEYUP },
+        ];
+        var sent = SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>());
+        if (sent == inputs.Length)
+            return new PasteInputAttempt(true, "escape");
+
+        SendInput(1, [new INPUT { type = INPUT_KEYBOARD, wVk = VK_ESCAPE, dwFlags = KEYEVENTF_KEYUP }], Marshal.SizeOf<INPUT>());
+        return new PasteInputAttempt(
+            false,
+            $"SendInput escape sent {sent}/{inputs.Length} lastError={Marshal.GetLastWin32Error()}");
     }
 
     private static void ReleasePasteChordKeys()
@@ -789,6 +851,7 @@ public sealed class TextInjector
     private const uint KEYEVENTF_KEYUP = 0x0002;
     private const ushort KEY_EVENT = 0x0001;
     private const ushort VK_CONTROL = 0x11;
+    private const ushort VK_ESCAPE = 0x1B;
     private const ushort VK_PACKET = 0xE7;
     private const ushort VK_RETURN = 0x0D;
     private const ushort VK_V = 0x56;
@@ -800,6 +863,7 @@ public sealed class TextInjector
     private const uint FileShareWrite = 0x00000002;
     private const uint OpenExisting = 3;
     private const int ErrorAccessDenied = 5;
+    private const uint ConsoleSelectionInProgress = 0x0001;
     private static readonly nint HWND_MESSAGE = new(-3);
 
     [StructLayout(LayoutKind.Explicit, Size = 40)]
@@ -831,6 +895,30 @@ public sealed class TextInjector
         public uint ControlKeyState;
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    private struct COORD
+    {
+        public short X;
+        public short Y;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct SMALL_RECT
+    {
+        public short Left;
+        public short Top;
+        public short Right;
+        public short Bottom;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct CONSOLE_SELECTION_INFO
+    {
+        public uint Flags;
+        public COORD SelectionAnchor;
+        public SMALL_RECT Selection;
+    }
+
     [DllImport("user32.dll")]
     private static extern nint GetForegroundWindow();
 
@@ -851,6 +939,9 @@ public sealed class TextInjector
 
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool FreeConsole();
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetConsoleSelectionInfo(out CONSOLE_SELECTION_INFO lpConsoleSelectionInfo);
 
     [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
     private static extern SafeFileHandle CreateFile(

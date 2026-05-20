@@ -3,6 +3,7 @@ using Avalonia.Interactivity;
 using Avalonia.Markup.Xaml;
 using TinyBoss.Core;
 using TinyBoss.Platform.Windows;
+using TinyBoss.Voice;
 using NAudio.CoreAudioApi;
 
 namespace TinyBoss;
@@ -16,6 +17,7 @@ public partial class SettingsWindow : Window
     private readonly ComboBox _tileHotkeyCombo;
     private readonly ComboBox _movePageHotkeyCombo;
     private readonly ComboBox _micCombo;
+    private readonly ComboBox _whisperModelCombo;
     private readonly ComboBox _gridLayoutCombo;
     private readonly StackPanel _monitorList;
     private readonly CheckBox _overrideSnapCheck;
@@ -55,6 +57,7 @@ public partial class SettingsWindow : Window
         _tileHotkeyCombo = this.FindControl<ComboBox>("TileHotkeyCombo")!;
         _movePageHotkeyCombo = this.FindControl<ComboBox>("MovePageHotkeyCombo")!;
         _micCombo = this.FindControl<ComboBox>("MicCombo")!;
+        _whisperModelCombo = this.FindControl<ComboBox>("WhisperModelCombo")!;
         _gridLayoutCombo = this.FindControl<ComboBox>("GridLayoutCombo")!;
         _monitorList = this.FindControl<StackPanel>("MonitorList")!;
         _overrideSnapCheck = this.FindControl<CheckBox>("OverrideSnapCheck")!;
@@ -116,6 +119,9 @@ public partial class SettingsWindow : Window
         }
 
         // Monitor enumeration
+        LoadWhisperModels();
+
+        // Monitor enumeration
         LoadMonitors();
 
         // Snap Layout override
@@ -126,6 +132,23 @@ public partial class SettingsWindow : Window
         _gridLayoutCombo.Items.Add(new ComboBoxItem { Content = "2 rows × 3 columns (wide)", Tag = "2x3" });
         _gridLayoutCombo.Items.Add(new ComboBoxItem { Content = "3 rows × 2 columns (tall)", Tag = "3x2" });
         _gridLayoutCombo.SelectedIndex = _config.GridLayout == "3x2" ? 1 : 0;
+    }
+
+    private void LoadWhisperModels()
+    {
+        _whisperModelCombo.Items.Clear();
+        var selectedModel = WhisperModelCatalog.Resolve(_config.WhisperModel);
+        var selectedIndex = 0;
+
+        for (var i = 0; i < WhisperModelCatalog.All.Count; i++)
+        {
+            var model = WhisperModelCatalog.All[i];
+            _whisperModelCombo.Items.Add(new ComboBoxItem { Content = model.DisplayName, Tag = model.Id });
+            if (model.Id == selectedModel.Id)
+                selectedIndex = i;
+        }
+
+        _whisperModelCombo.SelectedIndex = selectedIndex;
     }
 
     private void LoadMonitors()
@@ -255,6 +278,10 @@ public partial class SettingsWindow : Window
         // Microphone
         if (_micCombo.SelectedItem is ComboBoxItem micItem)
             _config.MicDeviceId = micItem.Tag as string;
+
+        // Speech model
+        if (_whisperModelCombo.SelectedItem is ComboBoxItem modelItem)
+            _config.WhisperModel = modelItem.Tag as string ?? WhisperModelCatalog.DefaultModelId;
 
         // Monitors — save checked ones (null = all enabled)
         var enabled = _monitorChecks

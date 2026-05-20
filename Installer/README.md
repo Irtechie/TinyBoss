@@ -26,6 +26,8 @@ Installer\Output\TinyBoss-Installer\TinyBoss.Installer.exe
 
 - Publishes TinyBoss as a self-contained Windows app.
 - Copies app files to `%LOCALAPPDATA%\Programs\TinyBoss`.
+- Verifies/downloads the configured local Whisper model under
+  `%LOCALAPPDATA%\TinyBoss\models`.
 - Installs shortcuts.
 - Registers uninstall metadata.
 - Creates the `TinyBoss Elevated Startup` scheduled task.

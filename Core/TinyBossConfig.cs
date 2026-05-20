@@ -69,6 +69,12 @@ public sealed class TinyBossConfig
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "TinyBoss", "models");
 
+    /// <summary>
+    /// Speech-to-text model id. Supported ids are defined by Voice.WhisperModelCatalog.
+    /// Default favors speed for push-to-talk dictation.
+    /// </summary>
+    public string WhisperModel { get; set; } = "tiny.en";
+
     // ── Runtime ──────────────────────────────────────────────────────────────
     [JsonIgnore] public bool IsFirstRun { get; private set; }
 

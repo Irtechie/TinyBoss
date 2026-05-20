@@ -1,14 +1,12 @@
-using System.Threading.Channels;
 using TinyBoss.Platform.Windows;
 
 namespace TinyBoss.Voice;
 
 /// <summary>
-/// Orchestrates voice-to-text using VAD + Whisper GPU:
-/// HotKey down -> Start mic -> VAD detects speech/silence in real-time
-/// On each silence gap -> speech chunk sent to Whisper GPU and buffered
-/// HotKey up -> flush remaining audio through Whisper, drain queued chunks, then inject once
-/// This preserves long dictation without sending synthetic input while the PTT key is held.
+/// Orchestrates push-to-talk batch dictation:
+/// HotKey down -> start mic and collect samples
+/// HotKey up -> transcribe larger overlapped chunks with Whisper, merge text, then inject once.
+/// This keeps synthetic input away from the target while the PTT key is held.
 /// </summary>
 public sealed class VoiceController : IDisposable
 {
@@ -22,21 +20,12 @@ public sealed class VoiceController : IDisposable
     private string? _voiceTargetSessionId;
     private volatile bool _recording;
 
-    // VAD state
-    private readonly List<float> _sampleBuffer = new();     // All samples since key-down
-    private readonly List<float> _preRollBuffer = new();     // Ring buffer for pre-speech audio
-    private readonly object _vadLock = new();
-    private int _speechStartIdx;          // Index in _sampleBuffer where current speech began
-    private bool _inSpeech;
-    private int _silenceSampleCount;      // How many consecutive silence samples
-    private int _speechSampleCount;       // How many consecutive speech samples in current utterance
-    private long _sessionToken;           // Monotonic session ID to discard stale results
+    // Batch dictation state. Samples are retained in memory during push-to-talk
+    // and transcribed once on key-up in larger overlapped chunks.
+    private readonly object _audioLock = new();
+    private readonly List<float> _recordingSamples = new();
 
-    // Ordered transcription queue
-    private Channel<SpeechSegment>? _segmentChannel;
-    private Task? _consumerTask;
     private CancellationTokenSource? _sessionCts;
-    private readonly VoiceTranscriptBuffer _transcriptBuffer = new();
     private int _stopInFlight;
     private int _injectInFlight;
     private string? _lastInjectedText;
@@ -45,18 +34,9 @@ public sealed class VoiceController : IDisposable
 
     // VAD tuning constants (16kHz sample rate)
     private const int SAMPLE_RATE = 16000;
-    private const float SILENCE_DURATION_SEC = 0.7f;
-    private const int SILENCE_SAMPLES = (int)(SAMPLE_RATE * SILENCE_DURATION_SEC);
-    private const float PRE_ROLL_SEC = 0.3f;
-    private const int PRE_ROLL_SAMPLES = (int)(SAMPLE_RATE * PRE_ROLL_SEC);
-    private const float TAIL_PAD_SEC = 0.3f;
-    private const int TAIL_PAD_SAMPLES = (int)(SAMPLE_RATE * TAIL_PAD_SEC);
-    private const float SPEECH_THRESHOLD = 0.02f;          // Fixed RMS threshold for speech detection
-    private const float MIN_SPEECH_SEC = 0.15f;         // Minimum speech to transcribe
-    private const int MIN_SPEECH_SAMPLES = (int)(SAMPLE_RATE * MIN_SPEECH_SEC);
-    private const float MAX_SEGMENT_SEC = 8.0f;
-    private const int MAX_SEGMENT_SAMPLES = (int)(SAMPLE_RATE * MAX_SEGMENT_SEC);
-    private static readonly TimeSpan FinalDrainTimeout = TimeSpan.FromSeconds(120);
+    private const float FINAL_TAIL_THRESHOLD = 0.006f;     // Lower bar for key-up tail recovery; Whisper guard filters silence.
+    private const float MIN_FINAL_TAIL_SEC = 0.5f;
+    private const int MIN_FINAL_TAIL_SAMPLES = (int)(SAMPLE_RATE * MIN_FINAL_TAIL_SEC);
     private static readonly TimeSpan KeyUpSettleDelay = TimeSpan.FromMilliseconds(150);
 
     public event Action<bool>? RecordingStateChanged;
@@ -81,20 +61,48 @@ public sealed class VoiceController : IDisposable
         _hotKeyListener.VoiceKeyDown += OnVoiceKeyDown;
         _hotKeyListener.VoiceKeyUp += OnVoiceKeyUp;
 
-        // Wire audio capture for VAD processing
+        // Wire audio capture for batch dictation.
         _audioCapture.SamplesAvailable += OnSamplesAvailable;
     }
 
     public void SetVoiceTarget(string? sessionId) => _voiceTargetSessionId = sessionId;
 
-    public VoiceStatus GetVoiceStatus() => new(_recording);
+    public VoiceStatus GetVoiceStatus() => new(
+        _recording,
+        _whisper.SelectedModel,
+        _whisper.ActiveModel,
+        _whisper.IsModelLoaded);
+
+    public void ReloadSpeechModel()
+    {
+        if (_recording)
+        {
+            VoiceDiag("WHISPER_RELOAD_SKIPPED recording=true selected={0}", _whisper.SelectedModel);
+            return;
+        }
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                VoiceDiag("WHISPER_RELOAD_START selected={0}", _whisper.SelectedModel);
+                await _whisper.ReloadConfiguredModelAsync();
+                VoiceDiag("WHISPER_RELOAD_READY active={0}", _whisper.ActiveModel);
+            }
+            catch (Exception ex)
+            {
+                VoiceDiag("WHISPER_RELOAD_FAIL {0}: {1}", ex.GetType().Name, ex.Message);
+                StatusMessage?.Invoke($"Whisper reload failed: {ex.Message}");
+            }
+        });
+    }
 
     public void Start()
     {
         _hotKeyListener.Start();
-        // Preload Whisper model on background thread so first use is instant
+        // Preload Whisper model on background thread so first use is instant.
         _whisper.PreloadAsync();
-        _logger.LogInformation("KH: Voice controller started (VAD + Whisper GPU)");
+        _logger.LogInformation("KH: Voice controller started (batch Whisper GPU)");
         VoiceDiag("VOICE_STARTED voiceKey=0x{0:X} voiceMods={1}",
             _hotKeyListener.VoiceKeyConfig, _hotKeyListener.VoiceModConfig);
     }
@@ -113,176 +121,28 @@ public sealed class VoiceController : IDisposable
             return;
         }
 
-        lock (_vadLock)
+        lock (_audioLock)
         {
-            _sampleBuffer.Clear();
-            _preRollBuffer.Clear();
-            _speechStartIdx = 0;
-            _inSpeech = false;
-            _silenceSampleCount = 0;
-            _speechSampleCount = 0;
+            _recordingSamples.Clear();
         }
-        _transcriptBuffer.Clear();
         _capturedTarget = _injector.CaptureVoiceTarget(_voiceTargetSessionId);
 
         _sessionCts?.Cancel();
         _sessionCts?.Dispose();
         _sessionCts = new CancellationTokenSource();
-        var token = Interlocked.Increment(ref _sessionToken);
-        _segmentChannel = Channel.CreateUnbounded<SpeechSegment>(
-            new UnboundedChannelOptions { SingleReader = true });
-        _consumerTask = Task.Run(() => ConsumeSegmentsAsync(token, _sessionCts.Token));
 
         _recording = true;
         RecordingStateChanged?.Invoke(true);
-        VoiceDiag("RECORDING_STARTED target=\"{0}\" (VAD + Whisper GPU)", _capturedTarget.Description);
+        VoiceDiag("RECORDING_STARTED target=\"{0}\" (batch Whisper GPU)", _capturedTarget.Description);
     }
 
     private void OnSamplesAvailable(float[] samples)
     {
         if (!_recording) return;
 
-        lock (_vadLock)
+        lock (_audioLock)
         {
-            _sampleBuffer.AddRange(samples);
-
-            // VAD on the new chunk
-            var chunkRms = CalculateRms(samples);
-
-            if (!_inSpeech)
-            {
-                // Maintain pre-roll ring buffer
-                _preRollBuffer.AddRange(samples);
-                if (_preRollBuffer.Count > PRE_ROLL_SAMPLES)
-                    _preRollBuffer.RemoveRange(0, _preRollBuffer.Count - PRE_ROLL_SAMPLES);
-
-                if (chunkRms > SPEECH_THRESHOLD)
-                {
-                    // Speech started! Mark where it begins (include pre-roll)
-                    _inSpeech = true;
-                    _speechStartIdx = Math.Max(0, _sampleBuffer.Count - samples.Length - _preRollBuffer.Count + samples.Length);
-                    _silenceSampleCount = 0;
-                    _speechSampleCount = samples.Length;
-                    VoiceDiag("SPEECH_START idx={0} rms={1:F5}", _speechStartIdx, chunkRms);
-                }
-            }
-            else
-            {
-                _speechSampleCount += samples.Length;
-
-                if (chunkRms <= SPEECH_THRESHOLD)
-                {
-                    _silenceSampleCount += samples.Length;
-
-                    // Check if silence duration exceeded → end of phrase
-                    if (_silenceSampleCount >= SILENCE_SAMPLES)
-                    {
-                        FlushSpeechSegment(includeTailPad: true);
-                    }
-                }
-                else
-                {
-                    _silenceSampleCount = 0;
-                }
-
-                // Force flush if segment too long (continuous speech)
-                if (_speechSampleCount >= MAX_SEGMENT_SAMPLES)
-                {
-                    VoiceDiag("MAX_SEGMENT forcing flush at {0:F1}s", _speechSampleCount / (float)SAMPLE_RATE);
-                    FlushSpeechSegment(includeTailPad: false);
-                }
-            }
-        }
-    }
-
-    /// <summary>
-    /// Extract current speech segment, enqueue for Whisper, reset VAD state.
-    /// Must be called under _vadLock.
-    /// </summary>
-    private void FlushSpeechSegment(bool includeTailPad)
-    {
-        var endIdx = _sampleBuffer.Count;
-        if (includeTailPad)
-        {
-            // Include tail padding (silence after speech) but don't exceed buffer
-            endIdx = Math.Min(_sampleBuffer.Count, _speechStartIdx + _speechSampleCount + TAIL_PAD_SAMPLES);
-        }
-
-        var segmentLength = endIdx - _speechStartIdx;
-        if (segmentLength < MIN_SPEECH_SAMPLES)
-        {
-            VoiceDiag("SKIP_SHORT segment={0} samples ({1:F2}s)", segmentLength, segmentLength / (float)SAMPLE_RATE);
-            ResetVadState();
-            return;
-        }
-
-        // Copy segment to immutable array
-        var segment = new float[segmentLength];
-        _sampleBuffer.CopyTo(_speechStartIdx, segment, 0, segmentLength);
-
-        VoiceDiag("ENQUEUE segment={0:F2}s ({1} samples)", segmentLength / (float)SAMPLE_RATE, segmentLength);
-
-        _segmentChannel?.Writer.TryWrite(new SpeechSegment(segment, Interlocked.Read(ref _sessionToken)));
-        ResetVadState();
-    }
-
-    private void ResetVadState()
-    {
-        _inSpeech = false;
-        _silenceSampleCount = 0;
-        _speechSampleCount = 0;
-        _preRollBuffer.Clear();
-        _sampleBuffer.Clear();
-    }
-
-    /// <summary>
-    /// Background consumer: transcribes segments in order and buffers accepted text.
-    /// </summary>
-    private async Task ConsumeSegmentsAsync(long expectedToken, CancellationToken ct)
-    {
-        try
-        {
-            await foreach (var segment in _segmentChannel!.Reader.ReadAllAsync(ct))
-            {
-                if (segment.SessionToken != expectedToken) continue; // Stale segment
-
-                try
-                {
-                    var sw = System.Diagnostics.Stopwatch.StartNew();
-                    var result = await _whisper.TranscribeAsync(segment.Samples, ct);
-                    sw.Stop();
-
-                    if (result is null || string.IsNullOrWhiteSpace(result.Text))
-                    {
-                        VoiceDiag("WHISPER_EMPTY ({0}ms)", sw.ElapsedMilliseconds);
-                        continue;
-                    }
-
-                    // Check hallucination guard
-                    if (!_guard.IsValidTranscription(result.Text, result.NoSpeechProb, result.Probability))
-                    {
-                        VoiceDiag("GUARD_REJECT \"{0}\" noSpeech={1:F2} logProb={2:F2}",
-                            result.Text, result.NoSpeechProb, result.Probability);
-                        continue;
-                    }
-
-                    var text = result.Text.Trim();
-                    VoiceDiag("WHISPER \"{0}\" ({1}ms, noSpeech={2:F2})",
-                        text, sw.ElapsedMilliseconds, result.NoSpeechProb);
-
-                    await AppendRecognizedTextAsync(text, ct);
-                }
-                catch (OperationCanceledException) { break; }
-                catch (Exception ex)
-                {
-                    VoiceDiag("TRANSCRIBE_ERROR {0}: {1}", ex.GetType().Name, ex.Message);
-                }
-            }
-        }
-        catch (OperationCanceledException) { }
-        catch (Exception ex)
-        {
-            VoiceDiag("CONSUMER_ERROR {0}: {1}", ex.GetType().Name, ex.Message);
+            _recordingSamples.AddRange(samples);
         }
     }
 
@@ -339,51 +199,24 @@ public sealed class VoiceController : IDisposable
         if (!_recording)
             return (false, string.Empty, "No dictation is active.");
 
-        _recording = false;
         RecordingStateChanged?.Invoke(false);
 
         _audioCapture.Stop();
         _audioCapture.RetainRawAudio = true;
 
-        float[] fallbackSamples;
-        lock (_vadLock)
+        float[] sessionSamples;
+        lock (_audioLock)
         {
-            fallbackSamples = _sampleBuffer.Count >= MIN_SPEECH_SAMPLES
-                ? _sampleBuffer.ToArray()
-                : [];
-            if (_inSpeech && _speechSampleCount >= MIN_SPEECH_SAMPLES)
-                FlushSpeechSegment(includeTailPad: false);
+            sessionSamples = _recordingSamples.ToArray();
+            _recordingSamples.Clear();
         }
 
-        _segmentChannel?.Writer.TryComplete();
-
-        try
-        {
-            if (_consumerTask is not null)
-                await _consumerTask.WaitAsync(FinalDrainTimeout, ct);
-        }
-        catch (TimeoutException)
-        {
-            VoiceDiag("DRAIN_TIMEOUT after {0:F0}s", FinalDrainTimeout.TotalSeconds);
-        }
-        catch (OperationCanceledException)
-        {
-            VoiceDiag("DRAIN_CANCELLED");
-            return (false, string.Empty, "Dictation cancelled.");
-        }
-        catch (Exception ex)
-        {
-            VoiceDiag("DRAIN_ERROR {0}: {1}", ex.GetType().Name, ex.Message);
-        }
+        _recording = false;
 
         if (KeyUpSettleDelay > TimeSpan.Zero)
             await Task.Delay(KeyUpSettleDelay, ct);
 
-        var pendingText = _transcriptBuffer.Flush();
-        if (string.IsNullOrWhiteSpace(pendingText) && fallbackSamples.Length >= MIN_SPEECH_SAMPLES)
-        {
-            pendingText = await TranscribeFallbackSessionAsync(fallbackSamples, ct);
-        }
+        var pendingText = await TranscribeBatchSessionAsync(sessionSamples, ct);
 
         if (string.IsNullOrWhiteSpace(pendingText))
             return (true, string.Empty, "Nothing captured.");
@@ -399,67 +232,66 @@ public sealed class VoiceController : IDisposable
         return (true, pendingText, "Dictation complete.");
     }
 
-    private async Task<string> TranscribeFallbackSessionAsync(float[] samples, CancellationToken ct)
+    private async Task<string> TranscribeBatchSessionAsync(float[] samples, CancellationToken ct)
     {
-        try
+        if (samples.Length < MIN_FINAL_TAIL_SAMPLES)
         {
-            VoiceDiag("FALLBACK_TRANSCRIBE samples={0} seconds={1:F2}", samples.Length, samples.Length / (float)SAMPLE_RATE);
-            var result = await _whisper.TranscribeAsync(samples, ct);
+            VoiceDiag("BATCH_SKIP short samples={0}", samples.Length);
+            return string.Empty;
+        }
+
+        var rms = CalculateRms(samples);
+        if (rms < FINAL_TAIL_THRESHOLD)
+        {
+            VoiceDiag("BATCH_SKIP quiet samples={0} seconds={1:F2} rms={2:F5}",
+                samples.Length,
+                samples.Length / (float)SAMPLE_RATE,
+                rms);
+            return string.Empty;
+        }
+
+        var chunks = VoiceAudioChunkPlanner.Plan(samples.Length);
+        var accepted = new List<string>();
+        VoiceDiag("BATCH_TRANSCRIBE_START samples={0} seconds={1:F2} chunks={2} rms={3:F5}",
+            samples.Length,
+            samples.Length / (float)SAMPLE_RATE,
+            chunks.Count,
+            rms);
+
+        for (var i = 0; i < chunks.Count; i++)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            var chunk = chunks[i];
+            var segment = new float[chunk.Length];
+            Array.Copy(samples, chunk.Start, segment, 0, chunk.Length);
+
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            var result = await _whisper.TranscribeAsync(segment, ct);
+            sw.Stop();
+
             if (result is null || string.IsNullOrWhiteSpace(result.Text))
             {
-                VoiceDiag("FALLBACK_EMPTY");
-                return string.Empty;
+                VoiceDiag("BATCH_CHUNK_EMPTY index={0} ms={1}", i, sw.ElapsedMilliseconds);
+                continue;
             }
 
             if (!_guard.IsValidTranscription(result.Text, result.NoSpeechProb, result.Probability))
             {
-                VoiceDiag("FALLBACK_GUARD_REJECT \"{0}\" noSpeech={1:F2} logProb={2:F2}",
-                    result.Text, result.NoSpeechProb, result.Probability);
-                return string.Empty;
+                VoiceDiag("BATCH_CHUNK_REJECT index={0} \"{1}\" noSpeech={2:F2} logProb={3:F2}",
+                    i, result.Text, result.NoSpeechProb, result.Probability);
+                continue;
             }
 
             var text = result.Text.Trim();
-            VoiceDiag("FALLBACK_ACCEPT chars={0}", text.Length);
-            return text;
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch (Exception ex)
-        {
-            VoiceDiag("FALLBACK_ERROR {0}: {1}", ex.GetType().Name, ex.Message);
-            return string.Empty;
-        }
-    }
-
-    private async Task AppendRecognizedTextAsync(string text, CancellationToken ct)
-    {
-        if (string.IsNullOrWhiteSpace(text))
-            return;
-
-        var dangerousMatch = _guard.CheckDestructiveCommand(text);
-        if (dangerousMatch is not null)
-        {
-            VoiceDiag("DESTRUCTIVE_BLOCK \"{0}\" in \"{1}\"", dangerousMatch, text);
-            StatusMessage?.Invoke($"Blocked dangerous command: {dangerousMatch}");
-            return;
+            VoiceDiag("BATCH_CHUNK_ACCEPT index={0} chars={1} ms={2} noSpeech={3:F2}",
+                i, text.Length, sw.ElapsedMilliseconds, result.NoSpeechProb);
+            accepted.Add(text);
         }
 
-        try
-        {
-            if (!_transcriptBuffer.Add(text))
-                return;
-
-            VoiceDiag("BUFFER_APPEND chars={0} segments={1} totalChars={2}",
-                text.Length, _transcriptBuffer.SegmentCount, _transcriptBuffer.CharacterCount);
-            await Task.CompletedTask;
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            VoiceDiag("BUFFER_ERROR {0}: {1}", ex.GetType().Name, ex.Message);
-            StatusMessage?.Invoke($"Voice buffer error: {ex.Message}");
-        }
+        var merged = VoiceTextOverlapMerger.Merge(accepted);
+        VoiceDiag("BATCH_TRANSCRIBE_DONE accepted={0} chars={1}", accepted.Count, merged.Length);
+        return merged;
     }
 
     private async Task<(bool Success, string Message)> InjectPendingTextOnceAsync(string pendingText)
@@ -504,18 +336,6 @@ public sealed class VoiceController : IDisposable
         return string.Join(' ', text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)).Trim();
     }
 
-    private static float CalculateRms(IReadOnlyList<float> samples, int offset = 0, int count = -1)
-    {
-        if (count < 0) count = samples.Count - offset;
-        if (count <= 0) return 0;
-
-        double sum = 0;
-        for (int i = offset; i < offset + count; i++)
-            sum += samples[i] * (double)samples[i];
-
-        return (float)Math.Sqrt(sum / count);
-    }
-
     private static float CalculateRms(float[] samples)
     {
         if (samples.Length == 0) return 0;
@@ -557,8 +377,6 @@ public sealed class VoiceController : IDisposable
     public void Dispose()
     {
         _sessionCts?.Cancel();
-        _segmentChannel?.Writer.TryComplete();
-        try { _consumerTask?.Wait(TimeSpan.FromSeconds(2)); } catch { }
         _sessionCts?.Dispose();
         _hotKeyListener.VoiceKeyDown -= OnVoiceKeyDown;
         _hotKeyListener.VoiceKeyUp -= OnVoiceKeyUp;
@@ -567,5 +385,4 @@ public sealed class VoiceController : IDisposable
         _audioCapture.Dispose();
     }
 
-    private sealed record SpeechSegment(float[] Samples, long SessionToken);
 }

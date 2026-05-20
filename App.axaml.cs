@@ -1070,6 +1070,7 @@ public class App : Application
             _tiling.Layout = _config.GridLayout ?? "2x3";
             _tiling.CollectVisibleTerminals(_config.EnabledMonitors, "settings");
         }
+        _voice?.ReloadSpeechModel();
         RebuildTrayMenu();
     }
 

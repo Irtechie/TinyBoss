@@ -45,7 +45,7 @@ Windows terminals, apps, microphone, tray, monitors
 | `Protocol/` | WebSocket envelope and payload contracts. |
 | `Handlers/` | Spawn, inject, kill, introspect, signal, answer, rename handlers. |
 | `Platform/Windows/` | Win32 tiling, drag watcher, hotkeys, window aliases, capture. |
-| `Voice/` | Audio capture, Whisper transcription, VAD, injection, hallucination guard. |
+| `Voice/` | Audio capture, batch Whisper transcription, overlap merge, injection, hallucination guard. |
 | `Installer/` | Self-contained installer and elevated startup task setup. |
 | `TinyBoss.Tests/` | Unit tests for config, tiling, alias memory, voice hotkey, and installer helpers. |
 
@@ -81,6 +81,7 @@ Important settings:
 | `overrideSnapLayouts` | `true` | Replace Windows Snap Layouts with TinyBoss overlay. |
 | `gridLayout` | `2x3` | Fill order for six-pane layouts. |
 | `modelDir` | `%LOCALAPPDATA%\TinyBoss\models` | Whisper model location. |
+| `whisperModel` | `tiny.en` | Speech model id: `tiny.en`, `base.en`, or `small.en`. |
 
 Window aliases are stored separately:
 

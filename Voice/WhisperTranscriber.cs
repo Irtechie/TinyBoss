@@ -1,37 +1,38 @@
 using Whisper.net;
 using Whisper.net.Ggml;
+using TinyBoss.Core;
 
 namespace TinyBoss.Voice;
 
 /// <summary>
 /// Manages Whisper.net model lifecycle with lazy loading, single Factory/Processor reuse,
-/// and 60-second idle unload to reclaim ~300MB of RAM.
+/// and keeps it loaded for the process lifetime. Native Whisper/CUDA unload
+/// and reload has caused process-level crashes on long-lived TinyBoss sessions.
 /// </summary>
 public sealed class WhisperTranscriber : IDisposable
 {
     private readonly ILogger<WhisperTranscriber> _logger;
-    private readonly string _modelDir;
-    private readonly string _modelPath;
+    private readonly TinyBossConfig _config;
 
     private WhisperFactory? _factory;
     private WhisperProcessor? _processor;
     private readonly SemaphoreSlim _gate = new(1, 1);
-    private Timer? _idleTimer;
-    private const int IdleTimeoutMs = 30 * 60_000;
+    private string? _loadedModelId;
+    private string? _loadedModelPath;
     private readonly string _diagPath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "Programs", "TinyBoss", "voice_diag.log");
 
     public bool IsModelLoaded => _processor is not null;
+    public string SelectedModel => WhisperModelCatalog.Resolve(_config.WhisperModel).Id;
+    public string ActiveModel => _loadedModelId ?? string.Empty;
+    public string ActiveModelPath => _loadedModelPath ?? string.Empty;
 
-    public WhisperTranscriber(ILogger<WhisperTranscriber> logger)
+    public WhisperTranscriber(ILogger<WhisperTranscriber> logger, TinyBossConfig config)
     {
         _logger = logger;
-        _modelDir = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "TinyBoss", "models");
-        _modelPath = Path.Combine(_modelDir, "ggml-tiny.en.bin");
-        Directory.CreateDirectory(_modelDir);
+        _config = config;
+        Directory.CreateDirectory(_config.ModelDir);
     }
 
     /// <summary>
@@ -51,7 +52,6 @@ public sealed class WhisperTranscriber : IDisposable
                     await WarmUpProcessorAsync(CancellationToken.None);
                 }
                 finally { _gate.Release(); }
-                ResetIdleTimer();
                 _logger.LogInformation("KH: Whisper model preloaded and ready");
                 VoiceDiag("WHISPER_PRELOAD_READY");
             }
@@ -72,17 +72,18 @@ public sealed class WhisperTranscriber : IDisposable
         await _gate.WaitAsync(ct);
         try
         {
-            ResetIdleTimer();
             await EnsureModelLoadedAsync(ct);
 
             if (_processor is null)
                 return null;
 
             var segments = new List<SegmentData>();
+            VoiceDiag("WHISPER_PROCESS_START samples={0} seconds={1:F2}", samples.Length, samples.Length / 16000.0);
             await foreach (var segment in _processor.ProcessAsync(samples, ct))
             {
                 segments.Add(segment);
             }
+            VoiceDiag("WHISPER_PROCESS_DONE segments={0}", segments.Count);
 
             if (segments.Count == 0)
                 return null;
@@ -105,24 +106,43 @@ public sealed class WhisperTranscriber : IDisposable
 
     private async Task EnsureModelLoadedAsync(CancellationToken ct)
     {
-        if (_processor is not null) return;
+        var spec = WhisperModelCatalog.Resolve(_config.WhisperModel);
+        var modelDir = string.IsNullOrWhiteSpace(_config.ModelDir)
+            ? Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "TinyBoss", "models")
+            : _config.ModelDir;
+        var modelPath = Path.Combine(modelDir, spec.FileName);
 
-        if (!File.Exists(_modelPath))
+        if (_processor is not null && string.Equals(_loadedModelId, spec.Id, StringComparison.OrdinalIgnoreCase))
+            return;
+
+        if (_processor is not null)
         {
-            _logger.LogInformation("KH: Downloading Whisper model (ggml-base.en, ~74 MB)...");
-            await DownloadModelAsync(ct);
+            VoiceDiag("WHISPER_MODEL_SWITCH from={0} to={1}", _loadedModelId ?? "unknown", spec.Id);
+            DisposeLoadedModel();
         }
 
-        _logger.LogInformation("KH: Loading Whisper model from {Path}", _modelPath);
-        _factory = WhisperFactory.FromPath(_modelPath);
+        Directory.CreateDirectory(modelDir);
+        if (!File.Exists(modelPath) || new FileInfo(modelPath).Length < spec.MinBytes)
+        {
+            _logger.LogInformation("KH: Downloading Whisper model {Model}...", spec.Id);
+            await DownloadModelAsync(spec, modelPath, ct);
+        }
+
+        _logger.LogInformation("KH: Loading Whisper model {Model} from {Path}", spec.Id, modelPath);
+        _factory = WhisperFactory.FromPath(modelPath);
         _processor = _factory.CreateBuilder()
             .WithLanguage("en")
             .WithSingleSegment()
             .WithNoSpeechThreshold(0.4f)
             .WithThreads(4)
             .Build();
+        _loadedModelId = spec.Id;
+        _loadedModelPath = modelPath;
 
-        _logger.LogInformation("KH: Whisper model loaded and ready");
+        _logger.LogInformation("KH: Whisper model {Model} loaded and ready", spec.Id);
+        VoiceDiag("WHISPER_MODEL_READY id={0} path=\"{1}\"", spec.Id, modelPath);
     }
 
     private async Task WarmUpProcessorAsync(CancellationToken ct)
@@ -146,21 +166,36 @@ public sealed class WhisperTranscriber : IDisposable
         }
     }
 
-    private async Task DownloadModelAsync(CancellationToken ct)
+    public async Task ReloadConfiguredModelAsync(CancellationToken ct = default)
     {
-        var tmpPath = _modelPath + ".tmp";
+        await _gate.WaitAsync(ct);
+        try
+        {
+            DisposeLoadedModel();
+            await EnsureModelLoadedAsync(ct);
+            await WarmUpProcessorAsync(ct);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    private async Task DownloadModelAsync(WhisperModelSpec spec, string modelPath, CancellationToken ct)
+    {
+        var tmpPath = modelPath + ".tmp";
         try
         {
             using var httpClient = new HttpClient();
             var downloader = new WhisperGgmlDownloader(httpClient);
             using var modelStream = await downloader.GetGgmlModelAsync(
-                GgmlType.Base, QuantizationType.NoQuantization, ct);
+                spec.GgmlType, QuantizationType.NoQuantization, ct);
             using var fileStream = File.Create(tmpPath);
             await modelStream.CopyToAsync(fileStream, ct);
             fileStream.Close();
 
-            File.Move(tmpPath, _modelPath, overwrite: true);
-            _logger.LogInformation("KH: Whisper model downloaded to {Path}", _modelPath);
+            File.Move(tmpPath, modelPath, overwrite: true);
+            _logger.LogInformation("KH: Whisper model {Model} downloaded to {Path}", spec.Id, modelPath);
         }
         catch
         {
@@ -169,33 +204,14 @@ public sealed class WhisperTranscriber : IDisposable
         }
     }
 
-    private void ResetIdleTimer()
+    private void DisposeLoadedModel()
     {
-        _idleTimer?.Dispose();
-        _idleTimer = new Timer(_ => UnloadModel(), null, IdleTimeoutMs, Timeout.Infinite);
-    }
-
-    private void UnloadModel()
-    {
-        if (!_gate.Wait(0)) return; // Someone is using it
-        try
-        {
-            if (_processor is null) return;
-
-            _processor.Dispose();
-            _processor = null;
-            _factory?.Dispose();
-            _factory = null;
-
-            GC.Collect(2, GCCollectionMode.Aggressive, true);
-
-            _logger.LogInformation("KH: Whisper model unloaded after idle timeout (~300 MB reclaimed)");
-            VoiceDiag("WHISPER_UNLOADED_IDLE");
-        }
-        finally
-        {
-            _gate.Release();
-        }
+        _processor?.Dispose();
+        _processor = null;
+        _factory?.Dispose();
+        _factory = null;
+        _loadedModelId = null;
+        _loadedModelPath = null;
     }
 
     private void VoiceDiag(string fmt, params object[] args)
@@ -210,9 +226,7 @@ public sealed class WhisperTranscriber : IDisposable
 
     public void Dispose()
     {
-        _idleTimer?.Dispose();
-        _processor?.Dispose();
-        _factory?.Dispose();
+        DisposeLoadedModel();
         _gate.Dispose();
     }
 }

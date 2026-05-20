@@ -69,6 +69,14 @@ public partial class InstallerViewModel : ObservableObject
             Checker = ct => AppInstaller.DetectElevatedStartup(ct),
             Installer = (p, ct) => AppInstaller.RegisterElevatedStartup(p, ct),
         });
+        Checks.Add(new CheckItem
+        {
+            Id = "whisper-model",
+            Name = "Whisper Model",
+            Description = "Download local speech-to-text model for TinyBoss mic",
+            Checker = ct => AppInstaller.DetectWhisperModel(ct),
+            Installer = (p, ct) => AppInstaller.InstallWhisperModel(p, ct),
+        });
 
         // CLI tools (only when user opts in)
         if (InstallClis)

@@ -2,17 +2,18 @@
 
 Local push-to-talk speech-to-text pipeline.
 
-TinyBoss voice is local. It captures microphone audio, segments speech with VAD,
-transcribes with Whisper, filters hallucinations/dangerous text, then injects a
-single final text payload.
+TinyBoss voice is local. It captures microphone audio while push-to-talk is
+held, transcribes larger overlapped chunks with Whisper after key-up, filters
+hallucinations/dangerous text, then injects a single final text payload.
 
 ## Pipeline
 
 ```text
 HotKeyListener
   -> AudioCapture
-  -> VAD in VoiceController
+  -> batch chunk planner in VoiceController
   -> WhisperTranscriber
+  -> overlap text merger
   -> HallucinationGuard
   -> TextInjector
 ```
@@ -21,11 +22,14 @@ HotKeyListener
 
 | File | Purpose |
 | --- | --- |
-| `VoiceController.cs` | Orchestrates PTT, VAD, chunk queue, transcript buffer, and final injection. |
+| `VoiceController.cs` | Orchestrates PTT recording, batch transcription, merge, and final injection. |
 | `AudioCapture.cs` | Captures microphone samples through NAudio. |
 | `WhisperTranscriber.cs` | Whisper.net transcription path. |
+| `WhisperModelCatalog.cs` | Supported selectable Whisper models. |
 | `SherpaStreamingTranscriber.cs` | Alternate streaming transcription path. |
-| `VoiceTranscriptBuffer.cs` | Orders and combines transcription chunks. |
+| `VoiceAudioChunkPlanner.cs` | Plans 35-second chunks with 2-second overlap. |
+| `VoiceTextOverlapMerger.cs` | Removes duplicate text from overlapped chunks. |
+| `VoiceTranscriptBuffer.cs` | Legacy helper for ordered text buffers. |
 | `HallucinationGuard.cs` | Filters known silence hallucinations and risky commands. |
 | `TextInjector.cs` | Sends final text to the selected destination. |
 
@@ -33,12 +37,12 @@ HotKeyListener
 
 - Sample rate: `16000`.
 - Whisper model directory: `%LOCALAPPDATA%\TinyBoss\models`.
+- Whisper model id: `tiny.en` by default; selectable in settings.
 - Push-to-talk key is configured in `tinyboss.json`.
 
 ## Rules
 
 - Do not inject partial chunks while the PTT key is held.
 - Flush on key-up, then inject once.
-- Keep stale transcription results isolated by session token.
 - If mic behavior breaks, check the selected NAudio device and whether another
   app has exclusive control of the device.
