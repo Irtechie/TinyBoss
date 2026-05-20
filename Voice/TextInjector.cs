@@ -305,7 +305,7 @@ public sealed class TextInjector
             return new FocusedAppendAttempt(true, consoleMessage);
         }
 
-        var paste = TryPasteViaClipboard(deliveryText);
+        var paste = TryPasteViaClipboard(deliveryText, target.IsTerminal, target.Hwnd);
         if (!paste.Success)
         {
             _logger.LogInformation(
@@ -506,7 +506,7 @@ public sealed class TextInjector
         }
     };
 
-    private static ClipboardPasteAttempt TryPasteViaClipboard(string text)
+    private static ClipboardPasteAttempt TryPasteViaClipboard(string text, bool isTerminalTarget, nint targetHwnd)
     {
         var formatCount = CountClipboardFormats();
 
@@ -516,16 +516,19 @@ public sealed class TextInjector
         if (!TrySetClipboardText(text, out var setFailure))
             return new ClipboardPasteAttempt(false, setFailure);
 
-        var pasteInput = SendPasteChord();
+        var transport = ClipboardPasteTransportPolicy.ForTarget(isTerminalTarget);
+        var pasteInput = transport == ClipboardPasteTransport.RightClick
+            ? SendRightClickPaste(targetHwnd)
+            : SendPasteChord();
         var decision = DictationClipboardPolicy.AfterPasteAttempt(pasteInput.Success);
         if (!pasteInput.Success)
             return new ClipboardPasteAttempt(
                 false,
-                $"dictation clipboard prepared; paste chord sent failed; {pasteInput.Message}; {decision.Message}");
+                $"dictation clipboard prepared; paste input failed; {pasteInput.Message}; {decision.Message}");
 
         var method = formatCount > 0
-            ? $"dictation clipboard prepared; paste chord sent; {decision.Message}; replaced prior clipboard data"
-            : $"dictation clipboard prepared; paste chord sent; {decision.Message}";
+            ? $"dictation clipboard prepared; paste input sent; {decision.Message}; replaced prior clipboard data; {pasteInput.Message}"
+            : $"dictation clipboard prepared; paste input sent; {decision.Message}; {pasteInput.Message}";
         return new ClipboardPasteAttempt(true, method);
     }
 
@@ -546,6 +549,44 @@ public sealed class TextInjector
         return new PasteInputAttempt(
             false,
             $"SendInput paste chord ctrl+v sent {sent}/{inputs.Length} lastError={Marshal.GetLastWin32Error()}");
+    }
+
+    private static PasteInputAttempt SendRightClickPaste(nint targetHwnd)
+    {
+        if (targetHwnd == nint.Zero || !IsWindow(targetHwnd))
+            return new PasteInputAttempt(false, "right-click paste missing target window");
+
+        if (!GetWindowRect(targetHwnd, out var rect))
+            return new PasteInputAttempt(false, $"GetWindowRect failed lastError={Marshal.GetLastWin32Error()}");
+
+        var clickX = rect.Left + Math.Max(1, (rect.Right - rect.Left) / 2);
+        var clickY = rect.Top + Math.Max(1, (rect.Bottom - rect.Top) / 2);
+        var restoreCursor = GetCursorPos(out var originalCursor);
+
+        try
+        {
+            if (!SetCursorPos(clickX, clickY))
+                return new PasteInputAttempt(false, $"SetCursorPos failed lastError={Marshal.GetLastWin32Error()}");
+
+            INPUT[] inputs =
+            [
+                new INPUT { type = INPUT_MOUSE, mouseFlags = MOUSEEVENTF_RIGHTDOWN },
+                new INPUT { type = INPUT_MOUSE, mouseFlags = MOUSEEVENTF_RIGHTUP },
+            ];
+            var sent = SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>());
+            if (sent == inputs.Length)
+                return new PasteInputAttempt(true, "clipboard/right-click");
+
+            SendInput(1, [new INPUT { type = INPUT_MOUSE, mouseFlags = MOUSEEVENTF_RIGHTUP }], Marshal.SizeOf<INPUT>());
+            return new PasteInputAttempt(
+                false,
+                $"SendInput right-click sent {sent}/{inputs.Length} lastError={Marshal.GetLastWin32Error()}");
+        }
+        finally
+        {
+            if (restoreCursor)
+                SetCursorPos(originalCursor.X, originalCursor.Y);
+        }
     }
 
     private static PasteInputAttempt SendEnterKey()
@@ -847,8 +888,11 @@ public sealed class TextInjector
 
     // ── Console input / clipboard paste P/Invoke (win-x64) ──────────────────
 
+    private const uint INPUT_MOUSE = 0;
     private const uint INPUT_KEYBOARD = 1;
     private const uint KEYEVENTF_KEYUP = 0x0002;
+    private const uint MOUSEEVENTF_RIGHTDOWN = 0x0008;
+    private const uint MOUSEEVENTF_RIGHTUP = 0x0010;
     private const ushort KEY_EVENT = 0x0001;
     private const ushort VK_CONTROL = 0x11;
     private const ushort VK_ESCAPE = 0x1B;
@@ -875,6 +919,27 @@ public sealed class TextInjector
         [FieldOffset(12)] public uint dwFlags;
         [FieldOffset(16)] public uint time;
         [FieldOffset(24)] public nint dwExtraInfo;
+        [FieldOffset(8)] public int dx;
+        [FieldOffset(12)] public int dy;
+        [FieldOffset(16)] public uint mouseData;
+        [FieldOffset(20)] public uint mouseFlags;
+        [FieldOffset(32)] public nint mouseExtraInfo;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct POINT
+    {
+        public int X;
+        public int Y;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct RECT
+    {
+        public int Left;
+        public int Top;
+        public int Right;
+        public int Bottom;
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -933,6 +998,15 @@ public sealed class TextInjector
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool GetWindowRect(nint hWnd, out RECT lpRect);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool GetCursorPos(out POINT lpPoint);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool SetCursorPos(int x, int y);
 
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool AttachConsole(uint dwProcessId);
