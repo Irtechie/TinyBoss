@@ -42,6 +42,7 @@ public sealed class WindowInjectHandler
         {
             Type = result.Success ? KhMessageType.Ack : KhMessageType.Error,
             SessionId = envelope.SessionId,
+            RequestId = envelope.RequestId,
             Payload = JsonSerializer.SerializeToElement(new AckPayload(result.Success, result.Message)),
         });
     }
@@ -96,6 +97,7 @@ public sealed class WindowInjectHandler
     {
         Type = KhMessageType.Error,
         SessionId = req.SessionId,
+        RequestId = req.RequestId,
         Payload = JsonSerializer.SerializeToElement(new AckPayload(false, message)),
     };
 }

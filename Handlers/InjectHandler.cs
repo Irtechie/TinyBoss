@@ -26,7 +26,7 @@ public sealed class InjectHandler
         var session = _registry.Get(envelope.SessionId ?? "");
         if (session is null)
         {
-            await sendAsync(Error(envelope.SessionId, "Session not found"));
+            await sendAsync(Error(envelope.SessionId, envelope.RequestId, "Session not found"));
             return;
         }
 
@@ -34,7 +34,7 @@ public sealed class InjectHandler
         if (session.SourceSurface.Equals("discord", StringComparison.OrdinalIgnoreCase))
         {
             _logger.LogWarning("KH: Inject blocked for discord-surface session {Id}", session.SessionId);
-            await sendAsync(Error(envelope.SessionId, "Inject not permitted for discord-surface sessions"));
+            await sendAsync(Error(envelope.SessionId, envelope.RequestId, "Inject not permitted for discord-surface sessions"));
             return;
         }
 
@@ -45,14 +45,14 @@ public sealed class InjectHandler
                 session.SessionId,
                 session.SessionKind,
                 string.Join(",", session.Capabilities));
-            await sendAsync(Error(envelope.SessionId, $"Session kind '{session.SessionKind}' does not support send_text"));
+            await sendAsync(Error(envelope.SessionId, envelope.RequestId, $"Session kind '{session.SessionKind}' does not support send_text"));
             return;
         }
 
         var payload = envelope.Payload.Deserialize<InjectPayload>();
         if (payload is null || string.IsNullOrEmpty(payload.Text))
         {
-            await sendAsync(Error(envelope.SessionId, "Invalid inject payload"));
+            await sendAsync(Error(envelope.SessionId, envelope.RequestId, "Invalid inject payload"));
             return;
         }
 
@@ -60,26 +60,28 @@ public sealed class InjectHandler
         {
             await session.WriteInputAsync(payload.Text.AsMemory(), ct);
             _logger.LogDebug("KH: Injected {N} chars into session {Id}", payload.Text.Length, session.SessionId);
-            await sendAsync(Ack(envelope.SessionId));
+            await sendAsync(Ack(envelope.SessionId, envelope.RequestId));
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "KH: Inject failed for session {Id}", session.SessionId);
-            await sendAsync(Error(envelope.SessionId, ex.Message));
+            await sendAsync(Error(envelope.SessionId, envelope.RequestId, ex.Message));
         }
     }
 
-    private static KhEnvelope Ack(string? sessionId) => new()
+    private static KhEnvelope Ack(string? sessionId, string? requestId) => new()
     {
         Type = KhMessageType.Ack,
         SessionId = sessionId,
+        RequestId = requestId,
         Payload = JsonSerializer.SerializeToElement(new AckPayload(true))
     };
 
-    private static KhEnvelope Error(string? sessionId, string message) => new()
+    private static KhEnvelope Error(string? sessionId, string? requestId, string message) => new()
     {
         Type = KhMessageType.Error,
         SessionId = sessionId,
+        RequestId = requestId,
         Payload = JsonSerializer.SerializeToElement(new AckPayload(false, message))
     };
 }

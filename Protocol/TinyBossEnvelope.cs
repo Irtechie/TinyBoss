@@ -16,6 +16,10 @@ public sealed class KhEnvelope
     [JsonPropertyName("session_id")]
     public string? SessionId { get; init; }
 
+    /// <summary>Optional correlation id used when PitBoss waits for an ack/error.</summary>
+    [JsonPropertyName("request_id")]
+    public string? RequestId { get; init; }
+
     [JsonPropertyName("payload")]
     public JsonElement Payload { get; init; }
 }
