@@ -320,17 +320,6 @@ public class App : Application
                 renameItem.Click += (_, _) => ShowRenameDialog(capturedMonitor, capturedSlot, capturedTile.Alias ?? "");
                 windowMenu.Add(renameItem);
 
-                if (!IsTerminalBossWindow(capturedTile))
-                {
-                    var bossifyItem = new NativeMenuItem("Bossify");
-                    bossifyItem.Click += (_, _) => _ = BossifyWindowAsync(capturedMonitor, capturedSlot, capturedTile);
-                    windowMenu.Add(bossifyItem);
-
-                    var bossifyResumeItem = new NativeMenuItem("Bossify + resume");
-                    bossifyResumeItem.Click += (_, _) => _ = BossifyResumeWindowAsync(capturedMonitor, capturedSlot, capturedTile);
-                    windowMenu.Add(bossifyResumeItem);
-                }
-
                 windowItem.Menu = windowMenu;
                 screenMenu.Add(windowItem);
             }

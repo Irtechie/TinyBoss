@@ -1,5 +1,6 @@
 using Whisper.net;
 using Whisper.net.Ggml;
+using Whisper.net.LibraryLoader;
 using TinyBoss.Core;
 
 namespace TinyBoss.Voice;
@@ -33,6 +34,7 @@ public sealed class WhisperTranscriber : IDisposable
         _logger = logger;
         _config = config;
         Directory.CreateDirectory(_config.ModelDir);
+        ConfigureRuntimePreference();
     }
 
     /// <summary>
@@ -130,8 +132,15 @@ public sealed class WhisperTranscriber : IDisposable
             await DownloadModelAsync(spec, modelPath, ct);
         }
 
-        _logger.LogInformation("KH: Loading Whisper model {Model} from {Path}", spec.Id, modelPath);
-        _factory = WhisperFactory.FromPath(modelPath);
+        _logger.LogInformation(
+            "KH: Loading Whisper model {Model} from {Path} runtime={Runtime}",
+            spec.Id,
+            modelPath,
+            EffectiveRuntimePreference);
+        _factory = WhisperFactory.FromPath(modelPath, new WhisperFactoryOptions
+        {
+            UseGpu = EffectiveRuntimePreference.Equals("cuda", StringComparison.OrdinalIgnoreCase),
+        });
         _processor = _factory.CreateBuilder()
             .WithLanguage("en")
             .WithSingleSegment()
@@ -142,7 +151,32 @@ public sealed class WhisperTranscriber : IDisposable
         _loadedModelPath = modelPath;
 
         _logger.LogInformation("KH: Whisper model {Model} loaded and ready", spec.Id);
-        VoiceDiag("WHISPER_MODEL_READY id={0} path=\"{1}\"", spec.Id, modelPath);
+        VoiceDiag(
+            "WHISPER_MODEL_READY id={0} runtime={1} loadedRuntime={2} path=\"{3}\"",
+            spec.Id,
+            EffectiveRuntimePreference,
+            RuntimeOptions.LoadedLibrary?.ToString() ?? "unknown",
+            modelPath);
+    }
+
+    private string EffectiveRuntimePreference =>
+        Environment.GetEnvironmentVariable("TINYBOSS_WHISPER_RUNTIME")
+        ?? _config.WhisperRuntime
+        ?? "cpu";
+
+    private void ConfigureRuntimePreference()
+    {
+        var preference = EffectiveRuntimePreference.Trim().ToLowerInvariant();
+        RuntimeOptions.RuntimeLibraryOrder = preference switch
+        {
+            "cuda" or "gpu" => [RuntimeLibrary.Cuda, RuntimeLibrary.Cpu, RuntimeLibrary.CpuNoAvx],
+            "noavx" or "cpu-noavx" => [RuntimeLibrary.CpuNoAvx, RuntimeLibrary.Cpu],
+            _ => [RuntimeLibrary.Cpu, RuntimeLibrary.CpuNoAvx],
+        };
+        RuntimeOptions.LoadedLibrary = null;
+        VoiceDiag("WHISPER_RUNTIME_ORDER preference={0} order={1}",
+            preference,
+            string.Join(",", RuntimeOptions.RuntimeLibraryOrder));
     }
 
     private async Task WarmUpProcessorAsync(CancellationToken ct)

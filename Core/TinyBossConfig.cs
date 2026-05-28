@@ -75,6 +75,12 @@ public sealed class TinyBossConfig
     /// </summary>
     public string WhisperModel { get; set; } = "tiny.en";
 
+    /// <summary>
+    /// Whisper native runtime preference. CPU is the safest default for the
+    /// always-on tray app; CUDA can be enabled explicitly after stability testing.
+    /// </summary>
+    public string WhisperRuntime { get; set; } = "cpu";
+
     // ── Runtime ──────────────────────────────────────────────────────────────
     [JsonIgnore] public bool IsFirstRun { get; private set; }
 
