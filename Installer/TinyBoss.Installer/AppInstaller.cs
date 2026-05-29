@@ -129,8 +129,18 @@ public static class AppInstaller
         progress(20, "Creating shortcuts…");
 
         var exePath = Path.Combine(InstallDir, AppExeName);
+        var restartScript = Path.Combine(InstallDir, "restart-tinyboss.ps1");
         var iconPath = Path.Combine(InstallDir, "Assets", "TinyBoss.ico");
         var shortcutIcon = File.Exists(iconPath) ? iconPath : exePath;
+        var powershellPath = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.System),
+            "WindowsPowerShell",
+            "v1.0",
+            "powershell.exe");
+        var shortcutTarget = File.Exists(restartScript) ? powershellPath : exePath;
+        var shortcutArguments = File.Exists(restartScript)
+            ? $"-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"{restartScript}\""
+            : "";
         var desktop = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
         var startMenu = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.StartMenu), "Programs");
@@ -141,7 +151,8 @@ public static class AppInstaller
             var ps = $"""
                 $ws = New-Object -ComObject WScript.Shell
                 $sc = $ws.CreateShortcut('{lnkPath}')
-                $sc.TargetPath = '{exePath}'
+                $sc.TargetPath = '{shortcutTarget}'
+                $sc.Arguments = '{shortcutArguments}'
                 $sc.WorkingDirectory = '{InstallDir}'
                 $sc.IconLocation = '{shortcutIcon}'
                 $sc.Description = 'TinyBoss - Window Manager & Voice CLI'

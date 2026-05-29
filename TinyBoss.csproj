@@ -44,6 +44,9 @@
     <Content Include="Assets\TinyBoss.ico">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
+    <Content Include="restart-tinyboss.ps1">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
     <AvaloniaResource Include="Assets\TinyBoss.ico" />
   </ItemGroup>
 
