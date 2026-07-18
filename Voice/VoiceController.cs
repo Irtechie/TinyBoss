@@ -110,7 +110,15 @@ public sealed class VoiceController : IDisposable
     private void OnVoiceKeyDown()
     {
         VoiceDiag("KEY_DOWN recording={0}", _recording);
-        if (_recording) return;
+        if (!CanStartRecording(_recording, _stopInFlight, _injectInFlight))
+        {
+            VoiceDiag(
+                "KEY_DOWN_IGNORED recording={0} stopInFlight={1} injectInFlight={2}",
+                _recording,
+                _stopInFlight,
+                _injectInFlight);
+            return;
+        }
 
         _audioCapture.RetainRawAudio = false;
         if (!_audioCapture.Start())
@@ -135,6 +143,9 @@ public sealed class VoiceController : IDisposable
         RecordingStateChanged?.Invoke(true);
         VoiceDiag("RECORDING_STARTED target=\"{0}\" (batch Whisper GPU)", _capturedTarget.Description);
     }
+
+    internal static bool CanStartRecording(bool recording, int stopInFlight, int injectInFlight) =>
+        !recording && stopInFlight == 0 && injectInFlight == 0;
 
     private void OnSamplesAvailable(float[] samples)
     {

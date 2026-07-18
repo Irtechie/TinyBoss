@@ -150,6 +150,7 @@ public class App : Application
             Width = 42,
             Height = 42,
             CanResize = false,
+            ShowActivated = false,
             ShowInTaskbar = false,
             SystemDecorations = SystemDecorations.None,
             Topmost = true,
@@ -162,6 +163,8 @@ public class App : Application
                 VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center
             }
         };
+        _recordingIndicator.Opened += (_, _) =>
+            WindowActivationStyles.MakeNonActivating(_recordingIndicator, clickThrough: true);
 
         PositionRecordingIndicator(_recordingIndicator);
         _recordingIndicator.Show();

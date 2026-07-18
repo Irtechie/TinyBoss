@@ -36,3 +36,9 @@ desktop.ini
 # KittenHerder runtime data (lives in %LOCALAPPDATA%, not in repo)
 sessions.json
 allowed_executables.txt
+
+# Agent-local state
+.atv/
+.pi/
+.pidev/local-models.models.jsonc
+.pidev/provider-routing.json

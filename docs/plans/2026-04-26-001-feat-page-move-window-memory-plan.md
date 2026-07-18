@@ -250,4 +250,4 @@ Inline plan review tightened these points before handoff:
 - The plan adds deterministic tests for merge and alias-memory rules because the repo currently has no test project.
 
 ## Next Steps
--> /ce-work with this plan when ready to implement.
+-> /kb-work with this plan when ready to implement.

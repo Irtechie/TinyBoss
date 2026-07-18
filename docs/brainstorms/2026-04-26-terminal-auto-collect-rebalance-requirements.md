@@ -85,4 +85,4 @@ flowchart TB
 - [Affects R6-R8][Technical] Decide which six terminals stay on an overfull monitor: current spatial order, current grid order when known, or foreground/recent order if available.
 
 ## Next Steps
-→ /ce-plan for structured implementation planning
+→ /kb-plan for structured implementation planning

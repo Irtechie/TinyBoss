@@ -107,4 +107,50 @@ public sealed class VoiceHotkeyStateTests
         Assert.True(backtickUp.Suppress);
         Assert.True(backtickUp.Stopped);
     }
+
+    [Fact]
+    public void RightAltKeyUpRequestsModifierCleanup()
+    {
+        var state = new VoiceHotkeyState();
+
+        state.ProcessKeyEvent(VK_RMENU, isKeyDown: true, modifiers: 0, key: VK_RMENU);
+        var up = state.ProcessKeyEvent(VK_RMENU, isKeyDown: false, modifiers: 0, key: VK_RMENU);
+
+        Assert.True(up.Suppress);
+        Assert.True(up.CleanupModifiers);
+        Assert.False(up.PanicCleanup);
+    }
+
+    [Fact]
+    public void FourRapidRightAltTapsTriggerPanicCleanup()
+    {
+        var state = new VoiceHotkeyState();
+        var start = new DateTimeOffset(2026, 6, 5, 12, 0, 0, TimeSpan.Zero);
+
+        for (var i = 0; i < VoiceHotkeyTransition.VoicePanicTapThreshold - 1; i++)
+        {
+            state.ProcessKeyEvent(VK_RMENU, isKeyDown: true, modifiers: 0, key: VK_RMENU, start.AddMilliseconds(i * 500));
+            var up = state.ProcessKeyEvent(VK_RMENU, isKeyDown: false, modifiers: 0, key: VK_RMENU, start.AddMilliseconds(i * 500 + 100));
+            Assert.False(up.PanicCleanup);
+        }
+
+        state.ProcessKeyEvent(VK_RMENU, isKeyDown: true, modifiers: 0, key: VK_RMENU, start.AddMilliseconds(1500));
+        var panic = state.ProcessKeyEvent(VK_RMENU, isKeyDown: false, modifiers: 0, key: VK_RMENU, start.AddMilliseconds(1600));
+
+        Assert.True(panic.PanicCleanup);
+    }
+
+    [Fact]
+    public void SlowRightAltTapsDoNotTriggerPanicCleanup()
+    {
+        var state = new VoiceHotkeyState();
+        var start = new DateTimeOffset(2026, 6, 5, 12, 0, 0, TimeSpan.Zero);
+
+        for (var i = 0; i < VoiceHotkeyTransition.VoicePanicTapThreshold; i++)
+        {
+            state.ProcessKeyEvent(VK_RMENU, isKeyDown: true, modifiers: 0, key: VK_RMENU, start.AddSeconds(i * 5));
+            var up = state.ProcessKeyEvent(VK_RMENU, isKeyDown: false, modifiers: 0, key: VK_RMENU, start.AddSeconds(i * 5).AddMilliseconds(100));
+            Assert.False(up.PanicCleanup);
+        }
+    }
 }

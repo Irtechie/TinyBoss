@@ -281,6 +281,8 @@ public sealed class HotKeyListener : IDisposable
                         ThreadPool.QueueUserWorkItem(_ => VoiceKeyDown?.Invoke());
                     if (transition.Stopped)
                         ThreadPool.QueueUserWorkItem(_ => VoiceKeyUp?.Invoke());
+                    if (transition.CleanupModifiers)
+                        ThreadPool.QueueUserWorkItem(_ => ForceReleaseVoiceModifiers(transition.PanicCleanup));
                     if (transition.Suppress)
                         return 1;
                 }
@@ -288,6 +290,39 @@ public sealed class HotKeyListener : IDisposable
         }
 
         return CallNextHookEx(_keyboardHook, nCode, wParam, lParam);
+    }
+
+    private static void ForceReleaseVoiceModifiers(bool clearClipboard)
+    {
+        foreach (var vk in new byte[] { VK_LMENU, VK_RMENU, VK_MENU, VK_LCONTROL, VK_RCONTROL, VK_CONTROL })
+            keybd_event(vk, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
+
+        if (!clearClipboard)
+            return;
+
+        try
+        {
+            if (OpenClipboard(nint.Zero))
+            {
+                try
+                {
+                    EmptyClipboard();
+                    HotKeyDiag("PANIC_CLEANUP clipboard_cleared=True");
+                }
+                finally
+                {
+                    CloseClipboard();
+                }
+            }
+            else
+            {
+                HotKeyDiag("PANIC_CLEANUP clipboard_cleared=False");
+            }
+        }
+        catch (Exception ex)
+        {
+            HotKeyDiag("PANIC_CLEANUP clipboard_error={0}: {1}", ex.GetType().Name, ex.Message);
+        }
     }
 
     private bool IsVoiceRelevantKey(int vkCode)
@@ -411,6 +446,7 @@ public sealed class HotKeyListener : IDisposable
 
     private static readonly nint HWND_MESSAGE = new(-3);
     private const uint PM_REMOVE = 0x0001;
+    private const uint KEYEVENTF_KEYUP = 0x0002;
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern bool RegisterHotKey(nint hWnd, int id, int fsModifiers, int vk);
@@ -420,6 +456,18 @@ public sealed class HotKeyListener : IDisposable
 
     [DllImport("user32.dll")]
     private static extern short GetAsyncKeyState(int vKey);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool OpenClipboard(nint hWndNewOwner);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool EmptyClipboard();
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool CloseClipboard();
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern nint SetWindowsHookEx(int idHook, LowLevelKeyboardProc lpfn, nint hMod, uint dwThreadId);

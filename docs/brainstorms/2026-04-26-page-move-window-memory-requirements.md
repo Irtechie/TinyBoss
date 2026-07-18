@@ -67,4 +67,4 @@ TinyBoss can tile individual CLI windows into a monitor grid, but moving a whole
 - [Affects R9][Technical] Decide the live-window identity key used for alias memory while avoiding stale aliases after process exit.
 
 ## Next Steps
--> /ce-plan for structured implementation planning
+-> /kb-plan for structured implementation planning

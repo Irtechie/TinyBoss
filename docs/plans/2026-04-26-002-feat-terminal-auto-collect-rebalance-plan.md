@@ -35,7 +35,7 @@ No `AGENTS.md` or `CLAUDE.md` instructions exist in this repo. The relevant loca
 
 External research is not needed. This is Win32 app behavior built from existing repo patterns, and current platform/library docs would not change the product or implementation strategy.
 
-Note: the standard `ce-plan` subagent research and `document-review` passes were not run because this session only permits subagents when the user explicitly asks for delegation.
+Note: the standard `kb-plan` subagent research and `document-review` passes were not run because this session only permits subagents when the user explicitly asks for delegation.
 
 ## Key Technical Decisions
 - **Extract a pure collection planner.** The balancing rule is product-critical and should be deterministic under tests. Keep the planner free of HWND, Win32, Avalonia, and process APIs.
@@ -177,7 +177,7 @@ CollectAndBalance(enabled monitors)
 
 **Files:**
 - `Platform/Windows/TilingCoordinator.cs`
-- `docs/plans/2026-04-26-002-feat-terminal-auto-collect-rebalance-plan.md` status update after implementation
+- `docs/plans/2026-04-26-002-feat-terminal-auto-collect-rebalankb-plan.md` status update after implementation
 
 **Approach:**
 - Add concise diagnostics to the existing drag diagnostic log for collection runs:

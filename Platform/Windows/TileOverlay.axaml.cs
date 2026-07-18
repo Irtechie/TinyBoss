@@ -6,7 +6,6 @@ using Avalonia.Markup.Xaml;
 using Avalonia.Media;
 using Avalonia.Media.Imaging;
 using Avalonia.Platform.Storage;
-using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using static TinyBoss.Platform.Windows.TilingCoordinator;
 
@@ -39,12 +38,6 @@ public partial class TileOverlay : Window
     private RECT _monitorBounds;
     private string _layout = "2x3";
 
-    // Win32 extended style constants
-    private const int GWL_EXSTYLE = -20;
-    private const int WS_EX_TRANSPARENT = 0x00000020;
-    private const int WS_EX_NOACTIVATE = 0x08000000;
-    private const int WS_EX_TOOLWINDOW = 0x00000080;
-
     public TileOverlay()
     {
         AvaloniaXamlLoader.Load(this);
@@ -72,13 +65,7 @@ public partial class TileOverlay : Window
     /// </summary>
     private void MakeClickThrough()
     {
-        if (TryGetPlatformHandle() is { } handle)
-        {
-            var hwnd = handle.Handle;
-            var exStyle = GetWindowLongPtr(hwnd, GWL_EXSTYLE);
-            exStyle |= WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW;
-            SetWindowLongPtr(hwnd, GWL_EXSTYLE, exStyle);
-        }
+        WindowActivationStyles.MakeNonActivating(this, clickThrough: true);
     }
 
     /// <summary>
@@ -88,13 +75,7 @@ public partial class TileOverlay : Window
     public void MakeInteractive()
     {
         _isDockStripMode = false;
-        if (TryGetPlatformHandle() is { } handle)
-        {
-            var hwnd = handle.Handle;
-            var exStyle = GetWindowLongPtr(hwnd, GWL_EXSTYLE);
-            exStyle &= ~WS_EX_TRANSPARENT;
-            SetWindowLongPtr(hwnd, GWL_EXSTYLE, exStyle);
-        }
+        WindowActivationStyles.SetClickThrough(this, enabled: false);
     }
 
     /// <summary>Fires when the overlay should be dismissed (click outside zones).</summary>
@@ -275,10 +256,4 @@ public partial class TileOverlay : Window
             _canvas.Children.Add(label);
         }
     }
-
-    [DllImport("user32.dll", SetLastError = true)]
-    private static extern nint GetWindowLongPtr(nint hWnd, int nIndex);
-
-    [DllImport("user32.dll", SetLastError = true)]
-    private static extern nint SetWindowLongPtr(nint hWnd, int nIndex, nint dwNewLong);
 }

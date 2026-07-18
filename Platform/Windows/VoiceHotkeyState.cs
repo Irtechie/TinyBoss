@@ -21,9 +21,18 @@ public sealed class VoiceHotkeyState
 
     private readonly HashSet<int> _downKeys = new();
     private readonly HashSet<int> _suppressedKeys = new();
+    private readonly Queue<DateTimeOffset> _voiceTapUps = new();
     private bool _voiceActive;
 
-    public VoiceHotkeyTransition ProcessKeyEvent(int vkCode, bool isKeyDown, int modifiers, int key)
+    public VoiceHotkeyTransition ProcessKeyEvent(int vkCode, bool isKeyDown, int modifiers, int key) =>
+        ProcessKeyEvent(vkCode, isKeyDown, modifiers, key, DateTimeOffset.UtcNow);
+
+    public VoiceHotkeyTransition ProcessKeyEvent(
+        int vkCode,
+        bool isKeyDown,
+        int modifiers,
+        int key,
+        DateTimeOffset now)
     {
         var wasActive = _voiceActive;
 
@@ -47,14 +56,33 @@ public sealed class VoiceHotkeyState
         else if (!isKeyDown)
             _suppressedKeys.Remove(vkCode);
 
-        return new VoiceHotkeyTransition(suppress, started, stopped);
+        var cleanupModifiers = suppress && !isKeyDown;
+        var panicCleanup = cleanupModifiers && RecordVoiceTapUp(vkCode, key, now);
+
+        return new VoiceHotkeyTransition(suppress, started, stopped, cleanupModifiers, panicCleanup);
     }
 
     public void Reset()
     {
         _downKeys.Clear();
         _suppressedKeys.Clear();
+        _voiceTapUps.Clear();
         _voiceActive = false;
+    }
+
+    private bool RecordVoiceTapUp(int vkCode, int key, DateTimeOffset now)
+    {
+        if (!IsConfiguredKey(vkCode, key))
+            return false;
+
+        while (_voiceTapUps.TryPeek(out var oldest) &&
+               now - oldest > VoiceHotkeyTransition.VoicePanicTapWindow)
+        {
+            _voiceTapUps.Dequeue();
+        }
+
+        _voiceTapUps.Enqueue(now);
+        return _voiceTapUps.Count >= VoiceHotkeyTransition.VoicePanicTapThreshold;
     }
 
     private bool ShouldSuppress(int vkCode, int key, bool isKeyDown, bool wasActive, bool comboHeld)
@@ -151,4 +179,13 @@ public sealed class VoiceHotkeyState
 
 }
 
-public readonly record struct VoiceHotkeyTransition(bool Suppress, bool Started, bool Stopped);
+public readonly record struct VoiceHotkeyTransition(
+    bool Suppress,
+    bool Started,
+    bool Stopped,
+    bool CleanupModifiers,
+    bool PanicCleanup)
+{
+    public const int VoicePanicTapThreshold = 4;
+    public static readonly TimeSpan VoicePanicTapWindow = TimeSpan.FromSeconds(4);
+}
